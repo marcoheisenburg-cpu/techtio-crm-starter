@@ -551,30 +551,50 @@ export default function DailySpendPage() {
       return;
     }
 
-    const payload = body
-      .map((row) => {
-        const accountName = row[accountIndex];
-        const offerName = row[offerIndex];
-        const account = accounts.find((item) => item.account_name.toLowerCase() === accountName.toLowerCase());
-        const offer = offers.find((item) => item.name.toLowerCase() === offerName.toLowerCase());
+  type CsvImportRow = {
+  date: string;
+  ad_account_id: string;
+  agency_id: string | null;
+  buyer_id: string | null;
+  offer_id: string;
+  geo: string;
+  spend: number;
+  leads: number;
+  ftds: number;
+  revenue: number;
+  notes: string | null;
+};
 
-        if (!account || !offer) return null;
+const payload: CsvImportRow[] = [];
 
-        return {
-          date: row[dateIndex],
-          ad_account_id: account.id,
-          agency_id: account.agency_id,
-          buyer_id: account.buyer_id,
-          offer_id: offer.id,
-          geo: account.geo || offer.geo,
-          spend: Number(row[spendIndex] || 0),
-          leads: Number(row[leadsIndex] || 0),
-          ftds: Number(row[ftdsIndex] || 0),
-          revenue: Number(row[revenueIndex] || 0),
-          notes: notesIndex > -1 ? row[notesIndex] || null : null
-        };
-      })
-      .filter(Boolean);
+body.forEach((row) => {
+  const accountName = row[accountIndex];
+  const offerName = row[offerIndex];
+
+  const account = accounts.find(
+    (item) => item.account_name.toLowerCase() === accountName.toLowerCase()
+  );
+
+  const offer = offers.find(
+    (item) => item.name.toLowerCase() === offerName.toLowerCase()
+  );
+
+  if (!account || !offer) return;
+
+  payload.push({
+    date: row[dateIndex],
+    ad_account_id: account.id,
+    agency_id: account.agency_id || null,
+    buyer_id: account.buyer_id || null,
+    offer_id: offer.id,
+    geo: account.geo || offer.geo,
+    spend: Number(row[spendIndex] || 0),
+    leads: Number(row[leadsIndex] || 0),
+    ftds: Number(row[ftdsIndex] || 0),
+    revenue: Number(row[revenueIndex] || 0),
+    notes: notesIndex >= 0 ? row[notesIndex] || null : null
+  });
+});
 
     if (payload.length === 0) {
       setMessage('No valid rows imported. Make sure account and offer names match existing CRM records.');
