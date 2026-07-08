@@ -1,144 +1,321 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { PageTitle } from '@/components/PageTitle';
-import { money, statusClass } from '@/lib/mock-data';
-import { Agency, useCrmDatabase } from '@/lib/local-db';
+import { supabase } from '@/lib/supabase-client';
 
-const emptyAgency: Agency = {
+type Agency = {
+  id: string;
+  name: string;
+  contact_name: string | null;
+  telegram: string | null;
+  email: string | null;
+  payment_terms: string | null;
+  notes: string | null;
+  created_at?: string;
+};
+
+type AgencyForm = {
+  name: string;
+  contact_name: string;
+  telegram: string;
+  email: string;
+  payment_terms: string;
+  notes: string;
+};
+
+const emptyForm: AgencyForm = {
   name: '',
-  contact: '',
-  activeAccounts: 0,
-  disabledAccounts: 0,
-  spend: 0,
-  avgCpl: 0,
-  quality: 'Medium'
+  contact_name: '',
+  telegram: '',
+  email: '',
+  payment_terms: '',
+  notes: ''
 };
 
 export default function AgenciesPage() {
-  const { database, addAgency, updateAgency, deleteAgency } = useCrmDatabase();
-  const [form, setForm] = useState<Agency>(emptyAgency);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [agencies, setAgencies] = useState<Agency[]>([]);
+  const [form, setForm] = useState<AgencyForm>(emptyForm);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
 
-  function updateField(field: keyof Agency, value: string) {
+  async function loadAgencies() {
+    setLoading(true);
+    setMessage('');
+
+    const { data, error } = await supabase
+      .from('agencies')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      setMessage(`Failed to load agencies: ${error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    setAgencies(data || []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    loadAgencies();
+  }, []);
+
+  function updateField(field: keyof AgencyForm, value: string) {
     setForm((current) => ({
       ...current,
-      [field]: ['activeAccounts', 'disabledAccounts', 'spend', 'avgCpl'].includes(field)
-        ? Number(value)
-        : value
+      [field]: value
     }));
   }
 
-  function submitAgency(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!form.name.trim()) return;
+  function resetForm() {
+    setForm(emptyForm);
+    setEditingId(null);
+    setMessage('');
+  }
 
-    const cleanAgency = {
-      ...form,
-      name: form.name.trim(),
-      contact: form.contact.trim()
-    };
+  function editAgency(agency: Agency) {
+    setEditingId(agency.id);
+    setForm({
+      name: agency.name || '',
+      contact_name: agency.contact_name || '',
+      telegram: agency.telegram || '',
+      email: agency.email || '',
+      payment_terms: agency.payment_terms || '',
+      notes: agency.notes || ''
+    });
+    setMessage('');
+  }
 
-    if (editingIndex === null) {
-      addAgency(cleanAgency);
-    } else {
-      updateAgency(editingIndex, cleanAgency);
+  async function saveAgency() {
+    if (!form.name.trim()) {
+      setMessage('Agency name is required.');
+      return;
     }
 
-    setForm(emptyAgency);
-    setEditingIndex(null);
+    setSaving(true);
+    setMessage('');
+
+    const payload = {
+      name: form.name.trim(),
+      contact_name: form.contact_name.trim() || null,
+      telegram: form.telegram.trim() || null,
+      email: form.email.trim() || null,
+      payment_terms: form.payment_terms.trim() || null,
+      notes: form.notes.trim() || null
+    };
+
+    if (editingId) {
+      const { error } = await supabase
+        .from('agencies')
+        .update(payload)
+        .eq('id', editingId);
+
+      if (error) {
+        setMessage(`Failed to update agency: ${error.message}`);
+        setSaving(false);
+        return;
+      }
+
+      setMessage('Agency updated successfully.');
+    } else {
+      const { error } = await supabase
+        .from('agencies')
+        .insert(payload);
+
+      if (error) {
+        setMessage(`Failed to add agency: ${error.message}`);
+        setSaving(false);
+        return;
+      }
+
+      setMessage('Agency added successfully.');
+    }
+
+    setSaving(false);
+    setForm(emptyForm);
+    setEditingId(null);
+    await loadAgencies();
   }
 
-  function editAgency(index: number) {
-    setForm(database.agencies[index]);
-    setEditingIndex(index);
-  }
+  async function deleteAgency(id: string) {
+    const confirmed = window.confirm('Delete this agency? This cannot be undone.');
 
-  function cancelEdit() {
-    setForm(emptyAgency);
-    setEditingIndex(null);
+    if (!confirmed) return;
+
+    setMessage('');
+
+    const { error } = await supabase
+      .from('agencies')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      setMessage(`Failed to delete agency: ${error.message}`);
+      return;
+    }
+
+    setMessage('Agency deleted successfully.');
+    await loadAgencies();
   }
 
   return (
     <>
-      <PageTitle title="Agencies" subtitle="Add, edit and compare account suppliers by survival, spend, CPL and quality." />
+      <PageTitle
+        title="Agencies"
+        subtitle="Manage agency partners and account suppliers. This page is now connected to Supabase."
+      />
 
-      <div className="card" style={{ marginBottom: 18 }}>
-        <h2>{editingIndex === null ? 'Add Agency' : 'Edit Agency'}</h2>
+      <div className="grid grid-2">
+        <div className="card">
+          <h2>{editingId ? 'Edit Agency' : 'Add Agency'}</h2>
 
-        <form className="form" onSubmit={submitAgency}>
           <label>
             Agency Name
-            <input value={form.name} onChange={(e) => updateField('name', e.target.value)} placeholder="Agency A" />
+            <input
+              value={form.name}
+              onChange={(e) => updateField('name', e.target.value)}
+              placeholder="Agency name"
+            />
           </label>
+
+          <br />
 
           <label>
-            Contact
-            <input value={form.contact} onChange={(e) => updateField('contact', e.target.value)} placeholder="@telegram or email" />
+            Contact Name
+            <input
+              value={form.contact_name}
+              onChange={(e) => updateField('contact_name', e.target.value)}
+              placeholder="Contact person"
+            />
           </label>
+
+          <br />
 
           <label>
-            Active Accounts
-            <input type="number" value={form.activeAccounts} onChange={(e) => updateField('activeAccounts', e.target.value)} />
+            Telegram
+            <input
+              value={form.telegram}
+              onChange={(e) => updateField('telegram', e.target.value)}
+              placeholder="@username"
+            />
           </label>
+
+          <br />
 
           <label>
-            Disabled Accounts
-            <input type="number" value={form.disabledAccounts} onChange={(e) => updateField('disabledAccounts', e.target.value)} />
+            Email
+            <input
+              value={form.email}
+              onChange={(e) => updateField('email', e.target.value)}
+              placeholder="email@example.com"
+            />
           </label>
+
+          <br />
 
           <label>
-            Total Spend
-            <input type="number" value={form.spend} onChange={(e) => updateField('spend', e.target.value)} />
+            Payment Terms
+            <input
+              value={form.payment_terms}
+              onChange={(e) => updateField('payment_terms', e.target.value)}
+              placeholder="Prepay / weekly / net terms"
+            />
           </label>
+
+          <br />
 
           <label>
-            Average CPL
-            <input type="number" value={form.avgCpl} onChange={(e) => updateField('avgCpl', e.target.value)} />
+            Notes
+            <textarea
+              value={form.notes}
+              onChange={(e) => updateField('notes', e.target.value)}
+              placeholder="Agency notes"
+              rows={4}
+            />
           </label>
 
-          <label>
-            Quality
-            <select value={form.quality} onChange={(e) => updateField('quality', e.target.value)}>
-              <option>Strong</option>
-              <option>Medium</option>
-              <option>Watch</option>
-              <option>Bad</option>
-            </select>
-          </label>
+          <br />
 
-          <div className="actions" style={{ alignSelf: 'end' }}>
-            <button className="btn" type="submit">{editingIndex === null ? 'Save Agency' : 'Update Agency'}</button>
-            {editingIndex !== null && <button className="btn secondary" type="button" onClick={cancelEdit}>Cancel</button>}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button className="btn" type="button" onClick={saveAgency} disabled={saving}>
+              {saving ? 'Saving...' : editingId ? 'Update Agency' : 'Add Agency'}
+            </button>
+
+            {editingId && (
+              <button className="btn secondary" type="button" onClick={resetForm}>
+                Cancel Edit
+              </button>
+            )}
           </div>
-        </form>
-      </div>
 
-      <div className="card table-wrap">
-        <table>
-          <thead>
-            <tr><th>Agency</th><th>Contact</th><th>Active Accounts</th><th>Disabled</th><th>Total Spend</th><th>Average CPL</th><th>Quality</th><th>Actions</th></tr>
-          </thead>
-          <tbody>
-            {database.agencies.map((a, index) => (
-              <tr key={`${a.name}-${index}`}>
-                <td>{a.name}</td>
-                <td>{a.contact}</td>
-                <td>{a.activeAccounts}</td>
-                <td>{a.disabledAccounts}</td>
-                <td>{money(a.spend)}</td>
-                <td>{money(a.avgCpl)}</td>
-                <td><span className={`badge ${statusClass(a.quality)}`}>{a.quality}</span></td>
-                <td>
-                  <div className="actions">
-                    <button className="btn secondary" type="button" onClick={() => editAgency(index)}>Edit</button>
-                    <button className="btn secondary" type="button" onClick={() => deleteAgency(index)}>Delete</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+          {message && (
+            <p className="muted" style={{ marginTop: 12 }}>
+              {message}
+            </p>
+          )}
+        </div>
+
+        <div className="card table-wrap">
+          <h2>Agency List</h2>
+
+          {loading ? (
+            <p className="muted">Loading agencies from Supabase...</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Agency</th>
+                  <th>Contact</th>
+                  <th>Telegram</th>
+                  <th>Email</th>
+                  <th>Payment Terms</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {agencies.length === 0 ? (
+                  <tr>
+                    <td colSpan={6}>No agencies yet.</td>
+                  </tr>
+                ) : (
+                  agencies.map((agency) => (
+                    <tr key={agency.id}>
+                      <td>{agency.name}</td>
+                      <td>{agency.contact_name || '-'}</td>
+                      <td>{agency.telegram || '-'}</td>
+                      <td>{agency.email || '-'}</td>
+                      <td>{agency.payment_terms || '-'}</td>
+                      <td>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          <button
+                            className="btn small"
+                            type="button"
+                            onClick={() => editAgency(agency)}
+                          >
+                            Edit
+                          </button>
+
+                          <button
+                            className="btn small danger"
+                            type="button"
+                            onClick={() => deleteAgency(agency.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
     </>
   );
