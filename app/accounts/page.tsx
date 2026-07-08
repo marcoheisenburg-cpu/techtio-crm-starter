@@ -1,319 +1,619 @@
 'use client';
 
-import { FormEvent, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { PageTitle } from '@/components/PageTitle';
-import { money, statusClass, totals } from '@/lib/mock-data';
-import { Account, useCrmDatabase } from '@/lib/local-db';
+import { supabase } from '@/lib/supabase-client';
 
-const emptyAccount: Account = {
-  name: '',
+type Agency = {
+  id: string;
+  name: string;
+};
+
+type Buyer = {
+  id: string;
+  name: string;
+};
+
+type AdAccount = {
+  id: string;
+  account_name: string;
+  account_external_id: string | null;
+  platform: string | null;
+  agency_id: string | null;
+  buyer_id: string | null;
+  business_manager: string | null;
+  geo: string | null;
+  vertical: string | null;
+  status: string | null;
+  currency: string | null;
+  timezone: string | null;
+  daily_limit: number | null;
+  daily_budget: number | null;
+  monthly_budget: number | null;
+  spend_limit: number | null;
+  lifetime_spend: number | null;
+  ban_date: string | null;
+  ban_reason: string | null;
+  replacement_needed: boolean | null;
+  notes: string | null;
+  created_at?: string;
+};
+
+type AccountForm = {
+  account_name: string;
+  account_external_id: string;
+  platform: string;
+  agency_id: string;
+  buyer_id: string;
+  business_manager: string;
+  geo: string;
+  vertical: string;
+  status: string;
+  currency: string;
+  timezone: string;
+  daily_limit: string;
+  daily_budget: string;
+  monthly_budget: string;
+  spend_limit: string;
+  lifetime_spend: string;
+  ban_date: string;
+  ban_reason: string;
+  replacement_needed: boolean;
+  notes: string;
+};
+
+const emptyForm: AccountForm = {
+  account_name: '',
+  account_external_id: '',
   platform: 'Facebook',
-  agency: '',
-  buyer: '',
+  agency_id: '',
+  buyer_id: '',
+  business_manager: '',
   geo: '',
-  status: 'Active',
-  dailyLimit: 0,
-  monthlyBudget: 0,
-  spendLimit: 0,
-  lifetimeSpend: 0,
-  banDate: '',
-  banReason: '',
-  replacementNeeded: false,
+  vertical: '',
+  status: 'active',
+  currency: 'USD',
+  timezone: '',
+  daily_limit: '0',
+  daily_budget: '0',
+  monthly_budget: '0',
+  spend_limit: '0',
+  lifetime_spend: '0',
+  ban_date: '',
+  ban_reason: '',
+  replacement_needed: false,
   notes: ''
 };
 
-const accountStatuses = ['Active', 'Warming', 'Limited', 'Disabled', 'Banned', 'Paused'];
-const platforms = ['Facebook', 'Google', 'TikTok', 'Native', 'Other'];
-
-function unique(values: string[]) {
-  return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
+function money(value: number | null | undefined) {
+  return `$${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })}`;
 }
 
-function getAccountBudgetStatus(account: Account, monthlySpend: number) {
-  const budget = Number(account.monthlyBudget || account.spendLimit || 0);
-  if (!budget) return 'No Budget';
-  const usedPct = (monthlySpend / budget) * 100;
-  if (usedPct >= 100) return 'Over Limit';
-  if (usedPct >= 80) return 'Near Limit';
-  return 'Healthy';
+function statusClass(status: string | null | undefined) {
+  const s = String(status || '').toLowerCase();
+
+  if (s.includes('active')) return 'green';
+  if (s.includes('warming')) return 'blue';
+  if (s.includes('limited') || s.includes('paused')) return 'amber';
+  if (s.includes('disabled') || s.includes('banned')) return 'red';
+
+  return 'blue';
 }
 
 export default function AccountsPage() {
-  const { database, addAccount, updateAccount, deleteAccount } = useCrmDatabase();
-  const [form, setForm] = useState<Account>(emptyAccount);
-  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [accounts, setAccounts] = useState<AdAccount[]>([]);
+  const [agencies, setAgencies] = useState<Agency[]>([]);
+  const [buyers, setBuyers] = useState<Buyer[]>([]);
+  const [form, setForm] = useState<AccountForm>(emptyForm);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
 
-  const savedAgencies = useMemo(() => unique(database.agencies.map((a) => a.name)), [database.agencies]);
-  const savedBuyers = useMemo(() => unique(database.buyerBudgets.map((b) => b.buyer)), [database.buyerBudgets]);
-  const savedGeos = useMemo(() => unique([
-    ...database.accounts.map((a) => a.geo),
-    ...database.offers.map((o) => o.geo),
-    ...database.dailySpend.map((r) => r.geo)
-  ]), [database.accounts, database.offers, database.dailySpend]);
+  async function loadData() {
+    setLoading(true);
+    setMessage('');
 
-  const accountRows = useMemo(() => {
-    return database.accounts.map((account, index) => {
-      const rows = database.dailySpend.filter((row) => row.account === account.name);
-      const t = totals(rows);
-      const monthlyBudget = Number(account.monthlyBudget || 0);
-      const spendLimit = Number(account.spendLimit || 0);
-      const budgetBase = monthlyBudget || spendLimit;
-      const remaining = budgetBase ? budgetBase - t.spend : 0;
-      const usedPct = budgetBase ? (t.spend / budgetBase) * 100 : 0;
-      const budgetStatus = getAccountBudgetStatus(account, t.spend);
+    const [accountsResult, agenciesResult, buyersResult] = await Promise.all([
+      supabase
+        .from('ad_accounts')
+        .select('*')
+        .order('created_at', { ascending: false }),
+      supabase
+        .from('agencies')
+        .select('id, name')
+        .order('name', { ascending: true }),
+      supabase
+        .from('buyers')
+        .select('id, name')
+        .order('name', { ascending: true })
+    ]);
 
-      return {
-        account,
-        index,
-        spend: t.spend,
-        leads: t.leads,
-        cpl: t.cpl,
-        profit: t.profit,
-        remaining,
-        usedPct,
-        budgetStatus
-      };
-    });
-  }, [database.accounts, database.dailySpend]);
+    if (accountsResult.error) {
+      setMessage(`Failed to load accounts: ${accountsResult.error.message}`);
+      setLoading(false);
+      return;
+    }
 
-  function updateField(field: keyof Account, value: string | boolean) {
+    if (agenciesResult.error) {
+      setMessage(`Failed to load agencies: ${agenciesResult.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    if (buyersResult.error) {
+      setMessage(`Failed to load buyers: ${buyersResult.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    setAccounts(accountsResult.data || []);
+    setAgencies(agenciesResult.data || []);
+    setBuyers(buyersResult.data || []);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  function getAgencyName(id: string | null) {
+    return agencies.find((agency) => agency.id === id)?.name || '-';
+  }
+
+  function getBuyerName(id: string | null) {
+    return buyers.find((buyer) => buyer.id === id)?.name || '-';
+  }
+
+  function updateField(field: keyof AccountForm, value: string | boolean) {
     setForm((current) => ({
       ...current,
-      [field]: ['dailyLimit', 'monthlyBudget', 'spendLimit', 'lifetimeSpend'].includes(field)
-        ? Number(value || 0)
-        : value
+      [field]: value
     }));
   }
 
-  function submitAccount(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!form.name.trim()) return;
+  function resetForm() {
+    setForm(emptyForm);
+    setEditingId(null);
+    setMessage('');
+  }
 
-    const cleanAccount: Account = {
-      ...form,
-      name: form.name.trim(),
-      platform: form.platform.trim() || 'Facebook',
-      agency: form.agency.trim(),
-      buyer: form.buyer.trim(),
-      geo: form.geo.trim(),
-      status: form.status || 'Active',
-      dailyLimit: Number(form.dailyLimit || 0),
-      monthlyBudget: Number(form.monthlyBudget || 0),
-      spendLimit: Number(form.spendLimit || 0),
-      lifetimeSpend: Number(form.lifetimeSpend || 0),
-      banDate: form.banDate || '',
-      banReason: form.banReason.trim(),
-      replacementNeeded: Boolean(form.replacementNeeded),
-      notes: form.notes.trim()
-    };
+  function editAccount(account: AdAccount) {
+    setEditingId(account.id);
 
-    if (editingIndex === null) {
-      addAccount(cleanAccount);
-    } else {
-      updateAccount(editingIndex, cleanAccount);
+    setForm({
+      account_name: account.account_name || '',
+      account_external_id: account.account_external_id || '',
+      platform: account.platform || 'Facebook',
+      agency_id: account.agency_id || '',
+      buyer_id: account.buyer_id || '',
+      business_manager: account.business_manager || '',
+      geo: account.geo || '',
+      vertical: account.vertical || '',
+      status: account.status || 'active',
+      currency: account.currency || 'USD',
+      timezone: account.timezone || '',
+      daily_limit: String(account.daily_limit || 0),
+      daily_budget: String(account.daily_budget || 0),
+      monthly_budget: String(account.monthly_budget || 0),
+      spend_limit: String(account.spend_limit || 0),
+      lifetime_spend: String(account.lifetime_spend || 0),
+      ban_date: account.ban_date || '',
+      ban_reason: account.ban_reason || '',
+      replacement_needed: Boolean(account.replacement_needed),
+      notes: account.notes || ''
+    });
+
+    setMessage('');
+  }
+
+  async function saveAccount() {
+    if (!form.account_name.trim()) {
+      setMessage('Account name is required.');
+      return;
     }
 
-    setForm(emptyAccount);
-    setEditingIndex(null);
+    setSaving(true);
+    setMessage('');
+
+    const payload = {
+      account_name: form.account_name.trim(),
+      account_external_id: form.account_external_id.trim() || null,
+      platform: form.platform || 'Facebook',
+      agency_id: form.agency_id || null,
+      buyer_id: form.buyer_id || null,
+      business_manager: form.business_manager.trim() || null,
+      geo: form.geo.trim() || null,
+      vertical: form.vertical.trim() || null,
+      status: form.status || 'active',
+      currency: form.currency.trim() || 'USD',
+      timezone: form.timezone.trim() || null,
+      daily_limit: Number(form.daily_limit || 0),
+      daily_budget: Number(form.daily_budget || 0),
+      monthly_budget: Number(form.monthly_budget || 0),
+      spend_limit: Number(form.spend_limit || 0),
+      lifetime_spend: Number(form.lifetime_spend || 0),
+      ban_date: form.ban_date || null,
+      ban_reason: form.ban_reason.trim() || null,
+      replacement_needed: Boolean(form.replacement_needed),
+      notes: form.notes.trim() || null
+    };
+
+    if (editingId) {
+      const { error } = await supabase
+        .from('ad_accounts')
+        .update(payload)
+        .eq('id', editingId);
+
+      if (error) {
+        setMessage(`Failed to update account: ${error.message}`);
+        setSaving(false);
+        return;
+      }
+
+      setMessage('Account updated successfully.');
+    } else {
+      const { error } = await supabase
+        .from('ad_accounts')
+        .insert(payload);
+
+      if (error) {
+        setMessage(`Failed to add account: ${error.message}`);
+        setSaving(false);
+        return;
+      }
+
+      setMessage('Account added successfully.');
+    }
+
+    setSaving(false);
+    setForm(emptyForm);
+    setEditingId(null);
+    await loadData();
   }
 
-  function editAccount(index: number) {
-    setForm(database.accounts[index]);
-    setEditingIndex(index);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  }
+  async function deleteAccount(id: string) {
+    const confirmed = window.confirm('Delete this account? This cannot be undone.');
 
-  function cancelEdit() {
-    setForm(emptyAccount);
-    setEditingIndex(null);
-  }
+    if (!confirmed) return;
 
-  const activeAccounts = database.accounts.filter((a) => a.status === 'Active').length;
-  const problemAccounts = database.accounts.filter((a) => ['Disabled', 'Banned', 'Limited'].includes(String(a.status))).length;
-  const replacementNeeded = database.accounts.filter((a) => a.replacementNeeded).length;
-  const totalMonthlyBudget = database.accounts.reduce((sum, account) => sum + Number(account.monthlyBudget || 0), 0);
+    setMessage('');
+
+    const { error } = await supabase
+      .from('ad_accounts')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      setMessage(`Failed to delete account: ${error.message}`);
+      return;
+    }
+
+    setMessage('Account deleted successfully.');
+    await loadData();
+  }
 
   return (
     <>
       <PageTitle
-        title="Accounts"
-        subtitle="Track ad account ownership, budget limits, status, bans and replacement needs."
+        title="Ad Accounts"
+        subtitle="Manage ad accounts, agencies, buyers, budgets, statuses and replacement tracking. This page is now connected to Supabase."
       />
 
-      <section className="grid grid-4" style={{ marginBottom: 18 }}>
+      <div className="grid grid-2">
         <div className="card">
-          <div className="metric-label">Active Accounts</div>
-          <div className="metric-value">{activeAccounts}</div>
-          <div className="metric-sub">Ready to spend</div>
-        </div>
-        <div className="card">
-          <div className="metric-label">Problem Accounts</div>
-          <div className="metric-value">{problemAccounts}</div>
-          <div className="metric-sub">Limited, disabled or banned</div>
-        </div>
-        <div className="card">
-          <div className="metric-label">Replacement Needed</div>
-          <div className="metric-value">{replacementNeeded}</div>
-          <div className="metric-sub">Accounts marked for replacement</div>
-        </div>
-        <div className="card">
-          <div className="metric-label">Monthly Account Budget</div>
-          <div className="metric-value">{money(totalMonthlyBudget)}</div>
-          <div className="metric-sub">Total set across accounts</div>
-        </div>
-      </section>
+          <h2>{editingId ? 'Edit Account' : 'Add Account'}</h2>
 
-      <div className="card" style={{ marginBottom: 18 }}>
-        <h2>{editingIndex === null ? 'Add Account' : `Edit ${database.accounts[editingIndex]?.name || 'Account'}`}</h2>
-        <form onSubmit={submitAccount}>
-          <div className="form">
-            <label>
-              Account Name
-              <input value={form.name} onChange={(e) => updateField('name', e.target.value)} placeholder="FB-BR-001" required />
-            </label>
+          <label>
+            Account Name
+            <input
+              value={form.account_name}
+              onChange={(e) => updateField('account_name', e.target.value)}
+              placeholder="Brazil FB 01"
+            />
+          </label>
 
-            <label>
-              Platform
-              <select value={form.platform} onChange={(e) => updateField('platform', e.target.value)}>
-                {platforms.map((platform) => <option key={platform} value={platform}>{platform}</option>)}
-              </select>
-            </label>
+          <label>
+            Account External ID
+            <input
+              value={form.account_external_id}
+              onChange={(e) => updateField('account_external_id', e.target.value)}
+              placeholder="act_123456789 or internal account ID"
+            />
+          </label>
 
-            <label>
-              Agency
-              <input list="account-agency-list" value={form.agency} onChange={(e) => updateField('agency', e.target.value)} placeholder="Agency A" />
-              <datalist id="account-agency-list">{savedAgencies.map((agency) => <option key={agency} value={agency} />)}</datalist>
-            </label>
+          <label>
+            Platform
+            <select
+              value={form.platform}
+              onChange={(e) => updateField('platform', e.target.value)}
+            >
+              <option value="Facebook">Facebook</option>
+              <option value="Google">Google</option>
+              <option value="TikTok">TikTok</option>
+              <option value="Native">Native</option>
+              <option value="Other">Other</option>
+            </select>
+          </label>
 
-            <label>
-              Buyer
-              <input list="account-buyer-list" value={form.buyer} onChange={(e) => updateField('buyer', e.target.value)} placeholder="Marco" />
-              <datalist id="account-buyer-list">{savedBuyers.map((buyer) => <option key={buyer} value={buyer} />)}</datalist>
-            </label>
+          <label>
+            Agency
+            <select
+              value={form.agency_id}
+              onChange={(e) => updateField('agency_id', e.target.value)}
+            >
+              <option value="">No agency selected</option>
+              {agencies.map((agency) => (
+                <option key={agency.id} value={agency.id}>
+                  {agency.name}
+                </option>
+              ))}
+            </select>
+          </label>
 
-            <label>
-              Geo
-              <input list="account-geo-list" value={form.geo} onChange={(e) => updateField('geo', e.target.value)} placeholder="Brazil" />
-              <datalist id="account-geo-list">{savedGeos.map((geo) => <option key={geo} value={geo} />)}</datalist>
-            </label>
+          <label>
+            Buyer
+            <select
+              value={form.buyer_id}
+              onChange={(e) => updateField('buyer_id', e.target.value)}
+            >
+              <option value="">No buyer selected</option>
+              {buyers.map((buyer) => (
+                <option key={buyer.id} value={buyer.id}>
+                  {buyer.name}
+                </option>
+              ))}
+            </select>
+          </label>
 
+          <label>
+            Business Manager
+            <input
+              value={form.business_manager}
+              onChange={(e) => updateField('business_manager', e.target.value)}
+              placeholder="BM name or ID"
+            />
+          </label>
+
+          <label>
+            Geo
+            <input
+              value={form.geo}
+              onChange={(e) => updateField('geo', e.target.value)}
+              placeholder="Brazil"
+            />
+          </label>
+
+          <label>
+            Vertical
+            <input
+              value={form.vertical}
+              onChange={(e) => updateField('vertical', e.target.value)}
+              placeholder="Investment / Sweepstakes / iGaming"
+            />
+          </label>
+
+          <label>
+            Status
+            <select
+              value={form.status}
+              onChange={(e) => updateField('status', e.target.value)}
+            >
+              <option value="active">Active</option>
+              <option value="warming">Warming</option>
+              <option value="limited">Limited</option>
+              <option value="disabled">Disabled</option>
+              <option value="banned">Banned</option>
+              <option value="paused">Paused</option>
+            </select>
+          </label>
+
+          <label>
+            Currency
+            <input
+              value={form.currency}
+              onChange={(e) => updateField('currency', e.target.value)}
+              placeholder="USD"
+            />
+          </label>
+
+          <label>
+            Timezone
+            <input
+              value={form.timezone}
+              onChange={(e) => updateField('timezone', e.target.value)}
+              placeholder="Europe/Nicosia"
+            />
+          </label>
+
+          <div className="grid grid-2" style={{ marginTop: 14 }}>
             <label>
-              Status
-              <select value={form.status} onChange={(e) => updateField('status', e.target.value)}>
-                {accountStatuses.map((status) => <option key={status} value={status}>{status}</option>)}
-              </select>
+              Daily Limit
+              <input
+                type="number"
+                value={form.daily_limit}
+                onChange={(e) => updateField('daily_limit', e.target.value)}
+              />
             </label>
 
             <label>
               Daily Budget
-              <input type="number" value={form.dailyLimit} onChange={(e) => updateField('dailyLimit', e.target.value)} />
+              <input
+                type="number"
+                value={form.daily_budget}
+                onChange={(e) => updateField('daily_budget', e.target.value)}
+              />
             </label>
 
             <label>
               Monthly Budget
-              <input type="number" value={form.monthlyBudget} onChange={(e) => updateField('monthlyBudget', e.target.value)} />
+              <input
+                type="number"
+                value={form.monthly_budget}
+                onChange={(e) => updateField('monthly_budget', e.target.value)}
+              />
             </label>
 
             <label>
               Spend Limit
-              <input type="number" value={form.spendLimit} onChange={(e) => updateField('spendLimit', e.target.value)} />
-            </label>
-
-            <label>
-              Lifetime Spend
-              <input type="number" value={form.lifetimeSpend} onChange={(e) => updateField('lifetimeSpend', e.target.value)} />
-            </label>
-
-            <label>
-              Ban Date
-              <input type="date" value={form.banDate} onChange={(e) => updateField('banDate', e.target.value)} />
-            </label>
-
-            <label>
-              Replacement Needed
-              <select value={form.replacementNeeded ? 'yes' : 'no'} onChange={(e) => updateField('replacementNeeded', e.target.value === 'yes')}>
-                <option value="no">No</option>
-                <option value="yes">Yes</option>
-              </select>
+              <input
+                type="number"
+                value={form.spend_limit}
+                onChange={(e) => updateField('spend_limit', e.target.value)}
+              />
             </label>
           </div>
 
-          <div className="form" style={{ marginTop: 14, gridTemplateColumns: '1fr 1fr' }}>
-            <label>
-              Ban / Limit Reason
-              <textarea value={form.banReason} onChange={(e) => updateField('banReason', e.target.value)} placeholder="Payment issue, policy, disabled, limited, etc." />
-            </label>
+          <label>
+            Lifetime Spend
+            <input
+              type="number"
+              value={form.lifetime_spend}
+              onChange={(e) => updateField('lifetime_spend', e.target.value)}
+            />
+          </label>
 
-            <label>
-              Notes
-              <textarea value={form.notes} onChange={(e) => updateField('notes', e.target.value)} placeholder="Account quality, agency comments, warm-up notes, restrictions..." />
-            </label>
-          </div>
+          <label>
+            Ban / Limit Date
+            <input
+              type="date"
+              value={form.ban_date}
+              onChange={(e) => updateField('ban_date', e.target.value)}
+            />
+          </label>
 
-          <div className="actions" style={{ marginTop: 14 }}>
-            <button className="btn" type="submit">{editingIndex === null ? 'Save Account' : 'Update Account'}</button>
-            {editingIndex !== null && <button className="btn secondary" type="button" onClick={cancelEdit}>Cancel</button>}
-          </div>
-        </form>
-      </div>
+          <label>
+            Ban / Limit Reason
+            <input
+              value={form.ban_reason}
+              onChange={(e) => updateField('ban_reason', e.target.value)}
+              placeholder="Payment issue / policy / disabled / limited"
+            />
+          </label>
 
-      <div className="card table-wrap">
-        <h2>Account List</h2>
-        <table>
-          <thead>
-            <tr>
-              <th>Account</th>
-              <th>Platform</th>
-              <th>Agency</th>
-              <th>Buyer</th>
-              <th>Geo</th>
-              <th>Status</th>
-              <th>Daily</th>
-              <th>Monthly</th>
-              <th>Spend</th>
-              <th>Remaining</th>
-              <th>Used</th>
-              <th>Budget Status</th>
-              <th>Replacement</th>
-              <th>Ban Date</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {accountRows.map((row) => (
-              <tr key={`${row.account.name}-${row.index}`}>
-                <td><strong>{row.account.name}</strong></td>
-                <td>{row.account.platform}</td>
-                <td>{row.account.agency || '-'}</td>
-                <td>{row.account.buyer || '-'}</td>
-                <td>{row.account.geo || '-'}</td>
-                <td><span className={`badge ${statusClass(row.account.status)}`}>{row.account.status}</span></td>
-                <td>{money(row.account.dailyLimit || 0)}</td>
-                <td>{money(row.account.monthlyBudget || 0)}</td>
-                <td>{money(row.spend)}</td>
-                <td className={row.remaining >= 0 ? 'positive' : 'negative'}>{row.account.monthlyBudget || row.account.spendLimit ? money(row.remaining) : '-'}</td>
-                <td>
-                  <div className="progress-cell">
-                    <div className="progress-bar"><span style={{ width: `${Math.min(row.usedPct, 100)}%` }} /></div>
-                    <strong>{row.account.monthlyBudget || row.account.spendLimit ? `${row.usedPct.toFixed(1)}%` : '-'}</strong>
-                  </div>
-                </td>
-                <td><span className={`badge ${statusClass(row.budgetStatus)}`}>{row.budgetStatus}</span></td>
-                <td>{row.account.replacementNeeded ? <span className="badge red">Yes</span> : <span className="badge green">No</span>}</td>
-                <td>{row.account.banDate || '-'}</td>
-                <td>
-                  <div className="actions">
-                    <button className="btn secondary" type="button" onClick={() => editAccount(row.index)}>Edit</button>
-                    <button className="btn secondary" type="button" onClick={() => deleteAccount(row.index)}>Delete</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {accountRows.length === 0 && (
-              <tr><td colSpan={15} className="muted">No accounts saved yet.</td></tr>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <input
+              type="checkbox"
+              checked={form.replacement_needed}
+              onChange={(e) => updateField('replacement_needed', e.target.checked)}
+              style={{ width: 'auto', marginTop: 0 }}
+            />
+            Replacement Needed
+          </label>
+
+          <label>
+            Notes
+            <textarea
+              value={form.notes}
+              onChange={(e) => updateField('notes', e.target.value)}
+              placeholder="Account quality, agency notes, limits, warnings..."
+              rows={4}
+            />
+          </label>
+
+          <br />
+
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button className="btn" type="button" onClick={saveAccount} disabled={saving}>
+              {saving ? 'Saving...' : editingId ? 'Update Account' : 'Add Account'}
+            </button>
+
+            {editingId && (
+              <button className="btn secondary" type="button" onClick={resetForm}>
+                Cancel Edit
+              </button>
             )}
-          </tbody>
-        </table>
+          </div>
+
+          {message && (
+            <p className="muted" style={{ marginTop: 12 }}>
+              {message}
+            </p>
+          )}
+        </div>
+
+        <div className="card table-wrap">
+          <h2>Account List</h2>
+
+          {loading ? (
+            <p className="muted">Loading accounts from Supabase...</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>External ID</th>
+                  <th>Platform</th>
+                  <th>Agency</th>
+                  <th>Buyer</th>
+                  <th>Geo</th>
+                  <th>Status</th>
+                  <th>Daily Budget</th>
+                  <th>Monthly Budget</th>
+                  <th>Spend Limit</th>
+                  <th>Replacement</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {accounts.length === 0 ? (
+                  <tr>
+                    <td colSpan={12}>No accounts yet.</td>
+                  </tr>
+                ) : (
+                  accounts.map((account) => (
+                    <tr key={account.id}>
+                      <td>{account.account_name}</td>
+                      <td>{account.account_external_id || '-'}</td>
+                      <td>{account.platform || '-'}</td>
+                      <td>{getAgencyName(account.agency_id)}</td>
+                      <td>{getBuyerName(account.buyer_id)}</td>
+                      <td>{account.geo || '-'}</td>
+                      <td>
+                        <span className={`badge ${statusClass(account.status)}`}>
+                          {account.status || 'active'}
+                        </span>
+                      </td>
+                      <td>{money(account.daily_budget)}</td>
+                      <td>{money(account.monthly_budget)}</td>
+                      <td>{money(account.spend_limit)}</td>
+                      <td>
+                        {account.replacement_needed ? (
+                          <span className="badge red">Needed</span>
+                        ) : (
+                          <span className="badge green">No</span>
+                        )}
+                      </td>
+                      <td>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          <button
+                            className="btn small"
+                            type="button"
+                            onClick={() => editAccount(account)}
+                          >
+                            Edit
+                          </button>
+
+                          <button
+                            className="btn small danger"
+                            type="button"
+                            onClick={() => deleteAccount(account.id)}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          )}
+        </div>
       </div>
     </>
   );
