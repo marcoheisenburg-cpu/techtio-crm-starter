@@ -6,7 +6,6 @@ import { supabase } from '@/lib/supabase-client';
 export default function LoginPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
@@ -19,23 +18,7 @@ export default function LoginPage() {
     setLoading(true);
     setMessage('');
 
-    if (mode === 'login') {
-      const { error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
-        password
-      });
-
-      if (error) {
-        setMessage(error.message);
-        setLoading(false);
-        return;
-      }
-
-      window.location.href = '/dashboard';
-      return;
-    }
-
-    const { error } = await supabase.auth.signUp({
+    const { error } = await supabase.auth.signInWithPassword({
       email: email.trim(),
       password
     });
@@ -46,9 +29,7 @@ export default function LoginPage() {
       return;
     }
 
-    setMessage('Account created. You can now log in.');
-    setMode('login');
-    setLoading(false);
+    window.location.href = '/dashboard';
   }
 
   return (
@@ -91,12 +72,8 @@ export default function LoginPage() {
         <div className="login-card">
           <div className="login-card-header">
             <span>Welcome back</span>
-            <h2>{mode === 'login' ? 'Sign in to CRM' : 'Create your account'}</h2>
-            <p>
-              {mode === 'login'
-                ? 'Enter your credentials to continue.'
-                : 'Create a secure account for CRM access.'}
-            </p>
+            <h2>Sign in to CRM</h2>
+            <p>Enter your Techtio CRM credentials to continue.</p>
           </div>
 
           <label>
@@ -117,25 +94,12 @@ export default function LoginPage() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Enter password"
-              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+              autoComplete="current-password"
             />
           </label>
 
           <button className="btn login-submit" type="button" onClick={handleSubmit} disabled={loading}>
-            {loading ? 'Please wait...' : mode === 'login' ? 'Login' : 'Create Account'}
-          </button>
-
-          <button
-            className="login-switch"
-            type="button"
-            onClick={() => {
-              setMessage('');
-              setMode(mode === 'login' ? 'signup' : 'login');
-            }}
-          >
-            {mode === 'login'
-              ? 'Need an account? Create one'
-              : 'Already have an account? Back to login'}
+            {loading ? 'Please wait...' : 'Login'}
           </button>
 
           {message && (
