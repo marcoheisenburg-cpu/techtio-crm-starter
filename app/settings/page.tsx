@@ -1,301 +1,680 @@
 'use client';
 
-import { ChangeEvent, FormEvent, useEffect, useRef, useState } from 'react';
+import { ChangeEvent, useEffect, useState } from 'react';
 import { PageTitle } from '@/components/PageTitle';
-import { money } from '@/lib/mock-data';
-import { BuyerBudget, CrmDatabase, useCrmDatabase } from '@/lib/local-db';
+import { supabase } from '@/lib/supabase-client';
 
-const today = new Date().toISOString().slice(0, 10);
+type Buyer = {
+  id: string;
+  name: string;
+};
 
-function downloadTextFile(filename: string, content: string, type = 'application/json;charset=utf-8;') {
+type BudgetPool = {
+  id: string;
+  name: string;
+  period: string;
+  total_budget: number;
+  currency: string | null;
+  warning_threshold_pct: number | null;
+  status: string | null;
+  notes: string | null;
+  created_at?: string;
+};
+
+type BuyerAllocation = {
+  id: string;
+  budget_pool_id: string;
+  buyer_id: string;
+  allocated_budget: number;
+  notes: string | null;
+};
+
+type PoolForm = {
+  name: string;
+  period: string;
+  total_budget: string;
+  currency: string;
+  warning_threshold_pct: string;
+  status: string;
+  notes: string;
+};
+
+const currentPeriod = new Date().toISOString().slice(0, 7);
+
+const emptyPoolForm: PoolForm = {
+  name: 'Main Media Buying Pool',
+  period: currentPeriod,
+  total_budget: '25000',
+  currency: 'USD',
+  warning_threshold_pct: '80',
+  status: 'active',
+  notes: ''
+};
+
+function money(value: number) {
+  return `$${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })}`;
+}
+
+function downloadFile(filename: string, content: string, type = 'application/json;charset=utf-8;') {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
 
   link.href = url;
   link.download = filename;
+
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+
   URL.revokeObjectURL(url);
 }
 
 export default function SettingsPage() {
-  const {
-    database,
-    saveBudgetPool,
-    addBuyerBudget,
-    updateBuyerBudget,
-    deleteBuyerBudget,
-    exportDatabase,
-    importDatabase,
-    resetDemoData
-  } = useCrmDatabase();
-
-  const restoreInputRef = useRef<HTMLInputElement | null>(null);
-  const [poolForm, setPoolForm] = useState({
-    name: database.budgetPool.name,
-    period: database.budgetPool.period,
-    totalBudget: String(database.budgetPool.totalBudget),
-    warningThresholdPct: String(database.budgetPool.warningThresholdPct)
-  });
-  const [buyerForm, setBuyerForm] = useState<BuyerBudget>({ buyer: '', poolBudget: 0 });
-  const [editingBuyerIndex, setEditingBuyerIndex] = useState<number | null>(null);
+  const [buyers, setBuyers] = useState<Buyer[]>([]);
+  const [budgetPools, setBudgetPools] = useState<BudgetPool[]>([]);
+  const [allocations, setAllocations] = useState<BuyerAllocation[]>([]);
+  const [selectedPoolId, setSelectedPoolId] = useState('');
+  const [poolForm, setPoolForm] = useState<PoolForm>(emptyPoolForm);
+  const [allocationDrafts, setAllocationDrafts] = useState<Record<string, string>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
-  useEffect(() => {
-    setPoolForm({
-      name: database.budgetPool.name,
-      period: database.budgetPool.period,
-      totalBudget: String(database.budgetPool.totalBudget),
-      warningThresholdPct: String(database.budgetPool.warningThresholdPct)
-    });
-  }, [database.budgetPool]);
+  async function loadSettingsData() {
+    setLoading(true);
+    setMessage('');
 
-  function showMessage(text: string) {
-    setMessage(text);
-    setTimeout(() => setMessage(''), 3500);
-  }
+    const [buyersResult, poolsResult, allocationsResult] = await Promise.all([
+      supabase.from('buyers').select('id, name').order('name', { ascending: true }),
+      supabase.from('budget_pools').select('*').order('created_at', { ascending: false }),
+      supabase.from('buyer_budget_allocations').select('*')
+    ]);
 
-  function syncPoolFormFromDatabase() {
-    setPoolForm({
-      name: database.budgetPool.name,
-      period: database.budgetPool.period,
-      totalBudget: String(database.budgetPool.totalBudget),
-      warningThresholdPct: String(database.budgetPool.warningThresholdPct)
-    });
-  }
-
-  function savePool(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    saveBudgetPool({
-      name: poolForm.name.trim() || 'Media Buying Pool',
-      period: poolForm.period.trim() || today.slice(0, 7),
-      totalBudget: Number(poolForm.totalBudget || 0),
-      warningThresholdPct: Number(poolForm.warningThresholdPct || 80)
-    });
-
-    showMessage('Budget pool saved.');
-  }
-
-  function saveBuyerBudget(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-
-    const payload: BuyerBudget = {
-      buyer: buyerForm.buyer.trim(),
-      poolBudget: Number(buyerForm.poolBudget || 0)
-    };
-
-    if (!payload.buyer) return;
-
-    if (editingBuyerIndex === null) {
-      addBuyerBudget(payload);
-      showMessage('Buyer allocation added.');
-    } else {
-      updateBuyerBudget(editingBuyerIndex, payload);
-      showMessage('Buyer allocation updated.');
+    if (buyersResult.error) {
+      setMessage(`Failed to load buyers: ${buyersResult.error.message}`);
+      setLoading(false);
+      return;
     }
 
-    setBuyerForm({ buyer: '', poolBudget: 0 });
-    setEditingBuyerIndex(null);
+    if (poolsResult.error) {
+      setMessage(`Failed to load budget pools: ${poolsResult.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    if (allocationsResult.error) {
+      setMessage(`Failed to load buyer allocations: ${allocationsResult.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    const loadedBuyers = (buyersResult.data || []) as Buyer[];
+    const loadedPools = (poolsResult.data || []) as BudgetPool[];
+    const loadedAllocations = (allocationsResult.data || []) as BuyerAllocation[];
+
+    setBuyers(loadedBuyers);
+    setBudgetPools(loadedPools);
+    setAllocations(loadedAllocations);
+
+    const selectedPool = loadedPools[0];
+
+    if (selectedPool) {
+      setSelectedPoolId(selectedPool.id);
+      setPoolForm({
+        name: selectedPool.name || '',
+        period: selectedPool.period || currentPeriod,
+        total_budget: String(selectedPool.total_budget || 0),
+        currency: selectedPool.currency || 'USD',
+        warning_threshold_pct: String(selectedPool.warning_threshold_pct || 80),
+        status: selectedPool.status || 'active',
+        notes: selectedPool.notes || ''
+      });
+
+      const drafts: Record<string, string> = {};
+
+      loadedBuyers.forEach((buyer) => {
+        const allocation = loadedAllocations.find(
+          (item) => item.budget_pool_id === selectedPool.id && item.buyer_id === buyer.id
+        );
+
+        drafts[buyer.id] = String(allocation?.allocated_budget || 0);
+      });
+
+      setAllocationDrafts(drafts);
+    } else {
+      setSelectedPoolId('');
+      setPoolForm(emptyPoolForm);
+
+      const drafts: Record<string, string> = {};
+      loadedBuyers.forEach((buyer) => {
+        drafts[buyer.id] = '0';
+      });
+      setAllocationDrafts(drafts);
+    }
+
+    setLoading(false);
   }
 
-  function startEditBuyer(index: number) {
-    setEditingBuyerIndex(index);
-    setBuyerForm(database.buyerBudgets[index]);
+  useEffect(() => {
+    loadSettingsData();
+  }, []);
+
+  function updatePoolField(field: keyof PoolForm, value: string) {
+    setPoolForm((current) => ({
+      ...current,
+      [field]: value
+    }));
   }
 
-  function exportBackup() {
-    downloadTextFile(`techtio-crm-backup-${today}.json`, exportDatabase());
+  function handlePoolSelect(poolId: string) {
+    setSelectedPoolId(poolId);
+
+    const pool = budgetPools.find((item) => item.id === poolId);
+
+    if (!pool) return;
+
+    setPoolForm({
+      name: pool.name || '',
+      period: pool.period || currentPeriod,
+      total_budget: String(pool.total_budget || 0),
+      currency: pool.currency || 'USD',
+      warning_threshold_pct: String(pool.warning_threshold_pct || 80),
+      status: pool.status || 'active',
+      notes: pool.notes || ''
+    });
+
+    const drafts: Record<string, string> = {};
+
+    buyers.forEach((buyer) => {
+      const allocation = allocations.find(
+        (item) => item.budget_pool_id === pool.id && item.buyer_id === buyer.id
+      );
+
+      drafts[buyer.id] = String(allocation?.allocated_budget || 0);
+    });
+
+    setAllocationDrafts(drafts);
   }
 
-  function handleRestore(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  async function saveBudgetPool() {
+    if (!poolForm.name.trim()) {
+      setMessage('Pool name is required.');
+      return;
+    }
 
-    const reader = new FileReader();
+    if (!poolForm.period.trim()) {
+      setMessage('Period is required. Example: 2026-07');
+      return;
+    }
 
-    reader.onload = () => {
-      try {
-        const parsed = JSON.parse(String(reader.result || '{}')) as Partial<CrmDatabase>;
-        importDatabase(parsed);
-        showMessage('Backup restored successfully.');
-        syncPoolFormFromDatabase();
-      } catch {
-        showMessage('Could not restore backup. Please select a valid CRM backup JSON file.');
-      } finally {
-        if (restoreInputRef.current) restoreInputRef.current.value = '';
-      }
+    setSaving(true);
+    setMessage('');
+
+    const payload = {
+      name: poolForm.name.trim(),
+      period: poolForm.period.trim(),
+      total_budget: Number(poolForm.total_budget || 0),
+      currency: poolForm.currency.trim() || 'USD',
+      warning_threshold_pct: Number(poolForm.warning_threshold_pct || 80),
+      status: poolForm.status || 'active',
+      notes: poolForm.notes.trim() || null
     };
 
-    reader.readAsText(file);
+    if (selectedPoolId) {
+      const { error } = await supabase
+        .from('budget_pools')
+        .update(payload)
+        .eq('id', selectedPoolId);
+
+      if (error) {
+        setMessage(`Failed to update budget pool: ${error.message}`);
+        setSaving(false);
+        return;
+      }
+
+      setMessage('Budget pool updated successfully.');
+    } else {
+      const { data, error } = await supabase
+        .from('budget_pools')
+        .insert(payload)
+        .select()
+        .single();
+
+      if (error) {
+        setMessage(`Failed to create budget pool: ${error.message}`);
+        setSaving(false);
+        return;
+      }
+
+      setSelectedPoolId(data.id);
+      setMessage('Budget pool created successfully.');
+    }
+
+    setSaving(false);
+    await loadSettingsData();
   }
 
-  function resetData() {
-    const confirmed = window.confirm('Reset the CRM back to the demo data? This will replace your local saved data in this browser.');
+  async function saveAllocations() {
+    if (!selectedPoolId) {
+      setMessage('Create or select a budget pool first.');
+      return;
+    }
+
+    setSaving(true);
+    setMessage('');
+
+    for (const buyer of buyers) {
+      const existing = allocations.find(
+        (item) => item.budget_pool_id === selectedPoolId && item.buyer_id === buyer.id
+      );
+
+      const payload = {
+        budget_pool_id: selectedPoolId,
+        buyer_id: buyer.id,
+        allocated_budget: Number(allocationDrafts[buyer.id] || 0),
+        notes: null
+      };
+
+      if (existing) {
+        const { error } = await supabase
+          .from('buyer_budget_allocations')
+          .update(payload)
+          .eq('id', existing.id);
+
+        if (error) {
+          setMessage(`Failed to update allocation for ${buyer.name}: ${error.message}`);
+          setSaving(false);
+          return;
+        }
+      } else {
+        const { error } = await supabase
+          .from('buyer_budget_allocations')
+          .insert(payload);
+
+        if (error) {
+          setMessage(`Failed to create allocation for ${buyer.name}: ${error.message}`);
+          setSaving(false);
+          return;
+        }
+      }
+    }
+
+    setSaving(false);
+    setMessage('Buyer allocations saved successfully.');
+    await loadSettingsData();
+  }
+
+  async function deleteBudgetPool() {
+    if (!selectedPoolId) {
+      setMessage('No budget pool selected.');
+      return;
+    }
+
+    const confirmed = window.confirm('Delete this budget pool and its buyer allocations?');
+
     if (!confirmed) return;
 
-    resetDemoData();
-    syncPoolFormFromDatabase();
-    showMessage('Demo data restored.');
+    const { error } = await supabase
+      .from('budget_pools')
+      .delete()
+      .eq('id', selectedPoolId);
+
+    if (error) {
+      setMessage(`Failed to delete budget pool: ${error.message}`);
+      return;
+    }
+
+    setMessage('Budget pool deleted successfully.');
+    await loadSettingsData();
   }
+
+  async function exportSupabaseBackup() {
+    setMessage('Preparing Supabase backup...');
+
+    const [
+      agenciesResult,
+      buyersResult,
+      offersResult,
+      accountsResult,
+      spendResult,
+      poolsResult,
+      allocationsResult
+    ] = await Promise.all([
+      supabase.from('agencies').select('*'),
+      supabase.from('buyers').select('*'),
+      supabase.from('offers').select('*'),
+      supabase.from('ad_accounts').select('*'),
+      supabase.from('daily_spend').select('*'),
+      supabase.from('budget_pools').select('*'),
+      supabase.from('buyer_budget_allocations').select('*')
+    ]);
+
+    const backup = {
+      exported_at: new Date().toISOString(),
+      agencies: agenciesResult.data || [],
+      buyers: buyersResult.data || [],
+      offers: offersResult.data || [],
+      ad_accounts: accountsResult.data || [],
+      daily_spend: spendResult.data || [],
+      budget_pools: poolsResult.data || [],
+      buyer_budget_allocations: allocationsResult.data || []
+    };
+
+    downloadFile(
+      `techtio-crm-supabase-backup-${new Date().toISOString().slice(0, 10)}.json`,
+      JSON.stringify(backup, null, 2)
+    );
+
+    setMessage('Backup exported successfully.');
+  }
+
+  async function restoreBackup(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (!file) return;
+
+    const confirmed = window.confirm(
+      'This will insert rows from the backup into Supabase. Continue?'
+    );
+
+    if (!confirmed) {
+      event.target.value = '';
+      return;
+    }
+
+    try {
+      const text = await file.text();
+      const backup = JSON.parse(text);
+
+      setSaving(true);
+      setMessage('Restoring backup...');
+
+      const tables = [
+        'agencies',
+        'buyers',
+        'offers',
+        'ad_accounts',
+        'budget_pools',
+        'buyer_budget_allocations',
+        'daily_spend'
+      ];
+
+      for (const table of tables) {
+        const rows = backup[table];
+
+        if (Array.isArray(rows) && rows.length > 0) {
+          const { error } = await supabase
+            .from(table)
+            .upsert(rows);
+
+          if (error) {
+            setMessage(`Restore failed on ${table}: ${error.message}`);
+            setSaving(false);
+            event.target.value = '';
+            return;
+          }
+        }
+      }
+
+      setSaving(false);
+      setMessage('Backup restored successfully.');
+      event.target.value = '';
+      await loadSettingsData();
+    } catch {
+      setMessage('Invalid backup file.');
+      event.target.value = '';
+      setSaving(false);
+    }
+  }
+
+  const totalAllocated = Object.values(allocationDrafts).reduce(
+    (sum, value) => sum + Number(value || 0),
+    0
+  );
+
+  const poolTotal = Number(poolForm.total_budget || 0);
+  const unallocated = poolTotal - totalAllocated;
 
   return (
     <>
-      <PageTitle title="Settings" subtitle="System settings, budget pools, backup/restore, API connections and alert rules." />
+      <PageTitle
+        title="Settings"
+        subtitle="Manage budget pools, buyer allocations, integrations and Supabase backups."
+      />
 
-      {message && (
-        <div className="card" style={{ marginBottom: 18 }}>
-          <p className="positive">{message}</p>
-        </div>
-      )}
-
-      <div className="grid grid-2">
+      {loading ? (
         <div className="card">
-          <h2>Budget Pool</h2>
-          <p className="muted">Manual MVP settings for the shared media buying pool.</p>
+          <h2>Loading settings from Supabase...</h2>
+        </div>
+      ) : (
+        <div className="grid grid-2">
+          <div className="card">
+            <h2>Budget Pool</h2>
 
-          <form className="form" onSubmit={savePool}>
+            {budgetPools.length > 0 && (
+              <label>
+                Select Pool
+                <select
+                  value={selectedPoolId}
+                  onChange={(e) => handlePoolSelect(e.target.value)}
+                >
+                  {budgetPools.map((pool) => (
+                    <option key={pool.id} value={pool.id}>
+                      {pool.name} — {pool.period}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+
             <label>
               Pool Name
-              <input value={poolForm.name} onChange={(event) => setPoolForm({ ...poolForm, name: event.target.value })} />
+              <input
+                value={poolForm.name}
+                onChange={(e) => updatePoolField('name', e.target.value)}
+              />
             </label>
 
             <label>
               Period
-              <input value={poolForm.period} onChange={(event) => setPoolForm({ ...poolForm, period: event.target.value })} />
+              <input
+                value={poolForm.period}
+                onChange={(e) => updatePoolField('period', e.target.value)}
+                placeholder="2026-07"
+              />
             </label>
 
             <label>
               Total Pool Budget
-              <input type="number" min="0" step="0.01" value={poolForm.totalBudget} onChange={(event) => setPoolForm({ ...poolForm, totalBudget: event.target.value })} />
+              <input
+                type="number"
+                value={poolForm.total_budget}
+                onChange={(e) => updatePoolField('total_budget', e.target.value)}
+              />
+            </label>
+
+            <label>
+              Currency
+              <input
+                value={poolForm.currency}
+                onChange={(e) => updatePoolField('currency', e.target.value)}
+                placeholder="USD"
+              />
             </label>
 
             <label>
               Warning Threshold %
-              <input type="number" min="0" max="100" step="1" value={poolForm.warningThresholdPct} onChange={(event) => setPoolForm({ ...poolForm, warningThresholdPct: event.target.value })} />
-            </label>
-
-            <div className="actions" style={{ alignSelf: 'end' }}>
-              <button className="btn" type="submit">Save Budget Settings</button>
-            </div>
-          </form>
-        </div>
-
-        <div className="card">
-          <h2>Backup / Restore</h2>
-          <p className="muted">Export all local CRM data before major changes, or restore it from a backup JSON file.</p>
-
-          <div className="actions" style={{ flexWrap: 'wrap' }}>
-            <button className="btn" type="button" onClick={exportBackup}>Export Full Backup</button>
-            <button className="btn secondary" type="button" onClick={() => restoreInputRef.current?.click()}>Restore Backup</button>
-            <button className="btn secondary" type="button" onClick={resetData}>Reset Demo Data</button>
-            <input ref={restoreInputRef} type="file" accept=".json,application/json" onChange={handleRestore} style={{ display: 'none' }} />
-          </div>
-        </div>
-
-        <div className="card table-wrap">
-          <h2>Buyer Pool Allocation</h2>
-
-          <form className="form" onSubmit={saveBuyerBudget} style={{ marginBottom: 18 }}>
-            <label>
-              Buyer
-              <input value={buyerForm.buyer} onChange={(event) => setBuyerForm({ ...buyerForm, buyer: event.target.value })} placeholder="Marco" required />
+              <input
+                type="number"
+                value={poolForm.warning_threshold_pct}
+                onChange={(e) => updatePoolField('warning_threshold_pct', e.target.value)}
+              />
             </label>
 
             <label>
-              Allocated Budget
-              <input type="number" min="0" step="0.01" value={buyerForm.poolBudget} onChange={(event) => setBuyerForm({ ...buyerForm, poolBudget: Number(event.target.value || 0) })} required />
+              Status
+              <select
+                value={poolForm.status}
+                onChange={(e) => updatePoolField('status', e.target.value)}
+              >
+                <option value="active">Active</option>
+                <option value="paused">Paused</option>
+                <option value="closed">Closed</option>
+              </select>
             </label>
 
-            <div className="actions" style={{ alignSelf: 'end' }}>
-              <button className="btn" type="submit">{editingBuyerIndex === null ? 'Add Allocation' : 'Save Allocation'}</button>
-              {editingBuyerIndex !== null && (
-                <button className="btn secondary" type="button" onClick={() => { setEditingBuyerIndex(null); setBuyerForm({ buyer: '', poolBudget: 0 }); }}>
-                  Cancel
+            <label>
+              Notes
+              <textarea
+                value={poolForm.notes}
+                onChange={(e) => updatePoolField('notes', e.target.value)}
+                rows={4}
+              />
+            </label>
+
+            <br />
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button className="btn" type="button" onClick={saveBudgetPool} disabled={saving}>
+                {saving ? 'Saving...' : selectedPoolId ? 'Update Pool' : 'Create Pool'}
+              </button>
+
+              {selectedPoolId && (
+                <button className="btn danger" type="button" onClick={deleteBudgetPool}>
+                  Delete Pool
                 </button>
               )}
             </div>
-          </form>
 
-          <table>
-            <thead>
-              <tr>
-                <th>Buyer</th>
-                <th>Allocated Budget</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {database.buyerBudgets.map((b, index) => (
-                <tr key={`${b.buyer}-${index}`}>
-                  <td>{b.buyer}</td>
-                  <td>{money(b.poolBudget)}</td>
-                  <td>
-                    <div className="actions">
-                      <button className="btn secondary" type="button" onClick={() => startEditBuyer(index)}>Edit</button>
-                      <button className="btn secondary" type="button" onClick={() => deleteBuyerBudget(index)}>Delete</button>
-                    </div>
-                  </td>
+            {message && (
+              <p className="muted" style={{ marginTop: 12 }}>
+                {message}
+              </p>
+            )}
+          </div>
+
+          <div className="card table-wrap">
+            <h2>Buyer Budget Allocations</h2>
+
+            <div className="grid grid-3" style={{ marginBottom: 16 }}>
+              <div>
+                <p className="muted">Pool Budget</p>
+                <h2>{money(poolTotal)}</h2>
+              </div>
+
+              <div>
+                <p className="muted">Allocated</p>
+                <h2>{money(totalAllocated)}</h2>
+              </div>
+
+              <div>
+                <p className="muted">Unallocated</p>
+                <h2 className={unallocated >= 0 ? 'positive' : 'negative'}>
+                  {money(unallocated)}
+                </h2>
+              </div>
+            </div>
+
+            <table>
+              <thead>
+                <tr>
+                  <th>Buyer</th>
+                  <th>Allocated Budget</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+
+              <tbody>
+                {buyers.length === 0 ? (
+                  <tr>
+                    <td colSpan={2}>No buyers yet. Add buyers first.</td>
+                  </tr>
+                ) : (
+                  buyers.map((buyer) => (
+                    <tr key={buyer.id}>
+                      <td>{buyer.name}</td>
+                      <td>
+                        <input
+                          type="number"
+                          value={allocationDrafts[buyer.id] || '0'}
+                          onChange={(e) =>
+                            setAllocationDrafts((current) => ({
+                              ...current,
+                              [buyer.id]: e.target.value
+                            }))
+                          }
+                        />
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+
+            <br />
+
+            <button className="btn" type="button" onClick={saveAllocations} disabled={saving}>
+              {saving ? 'Saving...' : 'Save Buyer Allocations'}
+            </button>
+          </div>
+
+          <div className="card">
+            <h2>Supabase Backup</h2>
+
+            <p className="muted">
+              Export a full JSON backup from Supabase or restore a previous backup.
+            </p>
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              <button className="btn" type="button" onClick={exportSupabaseBackup}>
+                Export Supabase Backup
+              </button>
+
+              <label className="btn secondary" style={{ marginTop: 0 }}>
+                Restore Backup
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={restoreBackup}
+                  style={{ display: 'none' }}
+                />
+              </label>
+            </div>
+          </div>
+
+          <div className="card">
+            <h2>Integrations</h2>
+
+            <p className="muted">
+              Next integrations: Keitaro, Trackbox, Telegram alerts and Meta API later.
+            </p>
+
+            <label>
+              Keitaro API URL
+              <input placeholder="https://tracker.example.com/admin_api/v1" />
+            </label>
+
+            <label>
+              Telegram Bot Token
+              <input placeholder="Bot token" />
+            </label>
+
+            <label>
+              Telegram Chat ID
+              <input placeholder="-100..." />
+            </label>
+
+            <br />
+
+            <button className="btn secondary" type="button">
+              Save Integration Settings Later
+            </button>
+          </div>
         </div>
-
-        <div className="card">
-          <h2>Integrations</h2>
-          <p>Next steps: connect Supabase, Keitaro, Trackbox and Telegram.</p>
-
-          <label>
-            Keitaro API URL
-            <input placeholder="https://tracker.example.com/admin_api/v1" />
-          </label>
-
-          <br />
-
-          <label>
-            Telegram Bot Token
-            <input placeholder="Bot token" />
-          </label>
-
-          <br />
-
-          <label>
-            Telegram Chat ID
-            <input placeholder="-100..." />
-          </label>
-        </div>
-
-        <div className="card">
-          <h2>Alert Rules</h2>
-          <p>Example: alert when CPL is 30% higher than 7-day average, spend has no leads, or pool budget reaches the warning threshold.</p>
-
-          <label>
-            Max CPL Increase %
-            <input defaultValue="30" />
-          </label>
-
-          <br />
-
-          <label>
-            No-lead Spend Threshold
-            <input defaultValue="100" />
-          </label>
-
-          <br />
-
-          <label>
-            Pool Budget Warning %
-            <input value={poolForm.warningThresholdPct} readOnly />
-          </label>
-
-          <br />
-
-          <button className="btn" type="button">Save Alert Settings</button>
-        </div>
-      </div>
+      )}
     </>
   );
 }
