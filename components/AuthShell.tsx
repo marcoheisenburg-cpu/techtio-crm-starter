@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabase-client';
 const nav = [
   ['Dashboard', '/dashboard'],
   ['Daily Spend', '/daily-spend'],
+  ['Top Up Requests', '/top-up-requests'],
   ['Accounts', '/accounts'],
   ['Agencies', '/agencies'],
   ['Offers', '/offers'],
