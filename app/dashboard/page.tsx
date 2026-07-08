@@ -1,286 +1,423 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { MetricCard } from '@/components/MetricCard';
 import { PageTitle } from '@/components/PageTitle';
-import { DailySpend, money, pct, statusClass, totals } from '@/lib/mock-data';
-import { useCrmDatabase } from '@/lib/local-db';
+import { supabase } from '@/lib/supabase-client';
 
-const today = new Date().toISOString().slice(0, 10);
-const monthStart = today.slice(0, 8) + '01';
-
-function getPastDate(daysBack: number) {
-  const date = new Date();
-  date.setDate(date.getDate() - daysBack);
-  return date.toISOString().slice(0, 10);
-}
-
-type GroupMetric = {
+type Agency = {
+  id: string;
   name: string;
+};
+
+type Buyer = {
+  id: string;
+  name: string;
+};
+
+type Offer = {
+  id: string;
+  name: string;
+  geo: string;
+  brand: string | null;
+};
+
+type AdAccount = {
+  id: string;
+  account_name: string;
+  agency_id: string | null;
+  buyer_id: string | null;
+  geo: string | null;
+  status: string | null;
+  daily_budget: number | null;
+  monthly_budget: number | null;
+  spend_limit: number | null;
+  replacement_needed: boolean | null;
+};
+
+type DailySpend = {
+  id: string;
+  date: string;
+  ad_account_id: string | null;
+  buyer_id: string | null;
+  agency_id: string | null;
+  offer_id: string | null;
+  geo: string;
   spend: number;
   leads: number;
   ftds: number;
   revenue: number;
-  profit: number;
-  cpl: number;
-  cpa: number;
-  roi: number;
+  notes: string | null;
 };
 
-function groupRows(rows: DailySpend[], key: keyof Pick<DailySpend, 'geo' | 'offer' | 'agency' | 'buyer'>): GroupMetric[] {
-  const groups = rows.reduce<Record<string, DailySpend[]>>((acc, row) => {
-    const name = String(row[key] || 'Unknown');
-    acc[name] = acc[name] || [];
-    acc[name].push(row);
-    return acc;
-  }, {});
-
-  return Object.entries(groups)
-    .map(([name, groupRows]) => {
-      const t = totals(groupRows);
-      return { name, ...t };
-    })
-    .sort((a, b) => b.spend - a.spend);
-}
-
-function PerformanceTable({ title, rows }: { title: string; rows: GroupMetric[] }) {
-  return (
-    <div className="card table-wrap">
-      <h2>{title}</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Spend</th>
-            <th>Leads</th>
-            <th>CPL</th>
-            <th>FTDs</th>
-            <th>Revenue</th>
-            <th>Profit</th>
-            <th>ROI</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.length === 0 && (
-            <tr>
-              <td colSpan={8} className="muted">No data in this date range.</td>
-            </tr>
-          )}
-          {rows.map((row) => (
-            <tr key={row.name}>
-              <td>{row.name}</td>
-              <td>{money(row.spend)}</td>
-              <td>{row.leads}</td>
-              <td>{money(row.cpl)}</td>
-              <td>{row.ftds}</td>
-              <td>{money(row.revenue)}</td>
-              <td className={row.profit >= 0 ? 'positive' : 'negative'}>{money(row.profit)}</td>
-              <td>{pct(row.roi)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-type AccountHealthRow = {
+type BudgetPool = {
+  id: string;
   name: string;
-  agency: string;
-  buyer: string;
-  geo: string;
-  status: string;
-  monthlyBudget: number;
-  spend: number;
-  remaining: number;
-  usedPct: number;
-  budgetStatus: string;
-  replacementNeeded: boolean;
-  banDate: string;
+  period: string;
+  total_budget: number;
+  warning_threshold_pct: number | null;
 };
 
-function AccountHealthTable({ rows }: { rows: AccountHealthRow[] }) {
-  return (
-    <div className="card table-wrap">
-      <h2>Account Health</h2>
-      <p className="muted">Status, monthly budget usage and replacement needs for the selected date range.</p>
-      <table>
-        <thead>
-          <tr>
-            <th>Account</th>
-            <th>Agency</th>
-            <th>Buyer</th>
-            <th>Geo</th>
-            <th>Status</th>
-            <th>Budget</th>
-            <th>Spend</th>
-            <th>Remaining</th>
-            <th>Used</th>
-            <th>Budget Status</th>
-            <th>Replacement</th>
-            <th>Ban Date</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.name}>
-              <td><strong>{row.name}</strong></td>
-              <td>{row.agency || '-'}</td>
-              <td>{row.buyer || '-'}</td>
-              <td>{row.geo || '-'}</td>
-              <td><span className={`badge ${statusClass(row.status)}`}>{row.status}</span></td>
-              <td>{row.monthlyBudget ? money(row.monthlyBudget) : '-'}</td>
-              <td>{money(row.spend)}</td>
-              <td className={row.remaining >= 0 ? 'positive' : 'negative'}>{row.monthlyBudget ? money(row.remaining) : '-'}</td>
-              <td>
-                <div className="progress-cell">
-                  <div className="progress-bar"><span style={{ width: `${Math.min(row.usedPct, 100)}%` }} /></div>
-                  <strong>{row.monthlyBudget ? pct(row.usedPct) : '-'}</strong>
-                </div>
-              </td>
-              <td><span className={`badge ${statusClass(row.budgetStatus)}`}>{row.budgetStatus}</span></td>
-              <td>{row.replacementNeeded ? <span className="badge red">Yes</span> : <span className="badge green">No</span>}</td>
-              <td>{row.banDate || '-'}</td>
-            </tr>
-          ))}
-          {rows.length === 0 && (
-            <tr><td colSpan={12} className="muted">No accounts saved yet.</td></tr>
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
+type BuyerAllocation = {
+  id: string;
+  budget_pool_id: string;
+  buyer_id: string;
+  allocated_budget: number;
+};
+
+type RangeType = 'today' | 'yesterday' | 'last7' | 'month' | 'all';
+
+const today = new Date().toISOString().slice(0, 10);
+
+function money(value: number) {
+  return `$${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })}`;
+}
+
+function pct(value: number) {
+  return `${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1
+  })}%`;
+}
+
+function yyyyMmDd(date: Date) {
+  return date.toISOString().slice(0, 10);
+}
+
+function statusClass(status: string | null | undefined) {
+  const s = String(status || '').toLowerCase();
+
+  if (s.includes('active') || s.includes('healthy') || s.includes('scale')) return 'green';
+  if (s.includes('warming') || s.includes('watch')) return 'blue';
+  if (s.includes('limited') || s.includes('paused') || s.includes('near')) return 'amber';
+  if (s.includes('disabled') || s.includes('banned') || s.includes('over') || s.includes('loss')) return 'red';
+
+  return 'blue';
 }
 
 export default function DashboardPage() {
-  const { database } = useCrmDatabase();
-  const [startDate, setStartDate] = useState(monthStart);
-  const [endDate, setEndDate] = useState(today);
-  const [rangeLabel, setRangeLabel] = useState('This Month');
+  const [dailySpend, setDailySpend] = useState<DailySpend[]>([]);
+  const [accounts, setAccounts] = useState<AdAccount[]>([]);
+  const [agencies, setAgencies] = useState<Agency[]>([]);
+  const [buyers, setBuyers] = useState<Buyer[]>([]);
+  const [offers, setOffers] = useState<Offer[]>([]);
+  const [budgetPools, setBudgetPools] = useState<BudgetPool[]>([]);
+  const [buyerAllocations, setBuyerAllocations] = useState<BuyerAllocation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState('');
 
-  function applyRange(label: string, start: string, end: string) {
-    setRangeLabel(label);
-    setStartDate(start);
-    setEndDate(end);
+  const [startDate, setStartDate] = useState(today);
+  const [endDate, setEndDate] = useState(today);
+  const [rangeLabel, setRangeLabel] = useState('Today');
+
+  async function loadDashboardData() {
+    setLoading(true);
+    setMessage('');
+
+    const [
+      spendResult,
+      accountsResult,
+      agenciesResult,
+      buyersResult,
+      offersResult,
+      poolsResult,
+      allocationsResult
+    ] = await Promise.all([
+      supabase.from('daily_spend').select('*').order('date', { ascending: false }),
+      supabase.from('ad_accounts').select('*').order('account_name', { ascending: true }),
+      supabase.from('agencies').select('id, name').order('name', { ascending: true }),
+      supabase.from('buyers').select('id, name').order('name', { ascending: true }),
+      supabase.from('offers').select('id, name, geo, brand').order('name', { ascending: true }),
+      supabase.from('budget_pools').select('*').order('created_at', { ascending: false }),
+      supabase.from('buyer_budget_allocations').select('*')
+    ]);
+
+    if (spendResult.error) {
+      setMessage(`Failed to load daily spend: ${spendResult.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    if (accountsResult.error) {
+      setMessage(`Failed to load accounts: ${accountsResult.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    if (agenciesResult.error || buyersResult.error || offersResult.error) {
+      setMessage('Failed to load agencies, buyers or offers.');
+      setLoading(false);
+      return;
+    }
+
+    setDailySpend((spendResult.data || []) as DailySpend[]);
+    setAccounts((accountsResult.data || []) as AdAccount[]);
+    setAgencies((agenciesResult.data || []) as Agency[]);
+    setBuyers((buyersResult.data || []) as Buyer[]);
+    setOffers((offersResult.data || []) as Offer[]);
+    setBudgetPools((poolsResult.data || []) as BudgetPool[]);
+    setBuyerAllocations((allocationsResult.data || []) as BuyerAllocation[]);
+
+    setLoading(false);
   }
 
-  const filteredRows = useMemo(() => {
-    return database.dailySpend
-      .filter((row) => {
-        if (startDate && row.date < startDate) return false;
-        if (endDate && row.date > endDate) return false;
-        return true;
-      })
-      .sort((a, b) => b.date.localeCompare(a.date));
-  }, [database.dailySpend, startDate, endDate]);
+  useEffect(() => {
+    loadDashboardData();
+  }, []);
 
-  const t = totals(filteredRows);
+  function setQuickRange(range: RangeType) {
+    const now = new Date();
 
-  const poolRemaining = database.budgetPool.totalBudget - t.spend;
-  const poolUsedPct = database.budgetPool.totalBudget ? (t.spend / database.budgetPool.totalBudget) * 100 : 0;
+    if (range === 'today') {
+      const d = yyyyMmDd(now);
+      setStartDate(d);
+      setEndDate(d);
+      setRangeLabel('Today');
+      return;
+    }
+
+    if (range === 'yesterday') {
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const d = yyyyMmDd(yesterday);
+      setStartDate(d);
+      setEndDate(d);
+      setRangeLabel('Yesterday');
+      return;
+    }
+
+    if (range === 'last7') {
+      const start = new Date(now);
+      start.setDate(start.getDate() - 6);
+      setStartDate(yyyyMmDd(start));
+      setEndDate(yyyyMmDd(now));
+      setRangeLabel('Last 7 Days');
+      return;
+    }
+
+    if (range === 'month') {
+      const start = new Date(now.getFullYear(), now.getMonth(), 1);
+      setStartDate(yyyyMmDd(start));
+      setEndDate(yyyyMmDd(now));
+      setRangeLabel('This Month');
+      return;
+    }
+
+    setStartDate('');
+    setEndDate('');
+    setRangeLabel('All Time');
+  }
+
+  function getAccountName(id: string | null) {
+    return accounts.find((account) => account.id === id)?.account_name || '-';
+  }
+
+  function getAgencyName(id: string | null) {
+    return agencies.find((agency) => agency.id === id)?.name || '-';
+  }
+
+  function getBuyerName(id: string | null) {
+    return buyers.find((buyer) => buyer.id === id)?.name || '-';
+  }
+
+  function getOfferName(id: string | null) {
+    return offers.find((offer) => offer.id === id)?.name || '-';
+  }
+
+  const filteredSpend = useMemo(() => {
+    return dailySpend.filter((entry) => {
+      if (startDate && entry.date < startDate) return false;
+      if (endDate && entry.date > endDate) return false;
+      return true;
+    });
+  }, [dailySpend, startDate, endDate]);
+
+  const totals = useMemo(() => {
+    const spend = filteredSpend.reduce((sum, entry) => sum + Number(entry.spend || 0), 0);
+    const leads = filteredSpend.reduce((sum, entry) => sum + Number(entry.leads || 0), 0);
+    const ftds = filteredSpend.reduce((sum, entry) => sum + Number(entry.ftds || 0), 0);
+    const revenue = filteredSpend.reduce((sum, entry) => sum + Number(entry.revenue || 0), 0);
+    const profit = revenue - spend;
+
+    return {
+      spend,
+      leads,
+      ftds,
+      revenue,
+      profit,
+      cpl: leads > 0 ? spend / leads : 0,
+      cpa: ftds > 0 ? spend / ftds : 0,
+      roi: spend > 0 ? (profit / spend) * 100 : 0
+    };
+  }, [filteredSpend]);
+
+  const currentBudgetPool = budgetPools[0];
+
+  const poolBudget =
+    Number(currentBudgetPool?.total_budget || 0) ||
+    buyerAllocations.reduce((sum, allocation) => sum + Number(allocation.allocated_budget || 0), 0) ||
+    25000;
+
+  const warningThreshold = Number(currentBudgetPool?.warning_threshold_pct || 80);
+  const poolSpent = totals.spend;
+  const poolRemaining = poolBudget - poolSpent;
+  const poolUsedPct = poolBudget > 0 ? (poolSpent / poolBudget) * 100 : 0;
+
   const poolStatus =
     poolRemaining < 0
       ? 'Over Budget'
-      : poolUsedPct >= database.budgetPool.warningThresholdPct
+      : poolUsedPct >= warningThreshold
         ? 'Near Limit'
         : 'Healthy';
 
-  const buyerRows = useMemo(() => {
-    return database.buyerBudgets.map((budget) => {
-      const rows = filteredRows.filter((row) => row.buyer === budget.buyer);
-      const buyerTotals = totals(rows);
-      const remaining = budget.poolBudget - buyerTotals.spend;
-      const usedPct = budget.poolBudget ? (buyerTotals.spend / budget.poolBudget) * 100 : 0;
+  const buyerUsage = useMemo(() => {
+    return buyers.map((buyer) => {
+      const buyerEntries = filteredSpend.filter((entry) => entry.buyer_id === buyer.id);
+      const allocation = buyerAllocations.find((item) => item.buyer_id === buyer.id);
+      const allocated = Number(allocation?.allocated_budget || 0);
 
-      return {
-        buyer: budget.buyer,
-        poolBudget: budget.poolBudget,
-        spent: buyerTotals.spend,
-        remaining,
-        usedPct,
-        leads: buyerTotals.leads,
-        cpl: buyerTotals.cpl,
-        profit: buyerTotals.profit,
-        roi: buyerTotals.roi,
-        status:
-          remaining < 0
-            ? 'Over Budget'
-            : usedPct >= database.budgetPool.warningThresholdPct
-              ? 'Near Limit'
-              : 'Healthy'
-      };
-    });
-  }, [database.buyerBudgets, database.budgetPool.warningThresholdPct, filteredRows]);
+      const spend = buyerEntries.reduce((sum, entry) => sum + Number(entry.spend || 0), 0);
+      const leads = buyerEntries.reduce((sum, entry) => sum + Number(entry.leads || 0), 0);
+      const ftds = buyerEntries.reduce((sum, entry) => sum + Number(entry.ftds || 0), 0);
+      const revenue = buyerEntries.reduce((sum, entry) => sum + Number(entry.revenue || 0), 0);
+      const profit = revenue - spend;
 
-  const geoRows = groupRows(filteredRows, 'geo');
-  const offerRows = groupRows(filteredRows, 'offer');
-  const agencyRows = groupRows(filteredRows, 'agency');
-  const buyerPerformanceRows = groupRows(filteredRows, 'buyer');
+      const usedPct = allocated > 0 ? (spend / allocated) * 100 : 0;
 
-  const accountHealthRows = useMemo<AccountHealthRow[]>(() => {
-    return database.accounts.map((account) => {
-      const rows = filteredRows.filter((row) => row.account === account.name);
-      const accountTotals = totals(rows);
-      const monthlyBudget = Number(account.monthlyBudget || account.spendLimit || 0);
-      const remaining = monthlyBudget ? monthlyBudget - accountTotals.spend : 0;
-      const usedPct = monthlyBudget ? (accountTotals.spend / monthlyBudget) * 100 : 0;
-      const budgetStatus = !monthlyBudget
-        ? 'No Budget'
-        : remaining < 0
-          ? 'Over Limit'
-          : usedPct >= 80
+      const status =
+        allocated > 0 && spend > allocated
+          ? 'Over Budget'
+          : allocated > 0 && usedPct >= warningThreshold
             ? 'Near Limit'
-            : 'Healthy';
+            : profit < 0 && spend > 0
+              ? 'Loss'
+              : 'Healthy';
 
       return {
-        name: account.name,
-        agency: account.agency,
-        buyer: account.buyer,
-        geo: account.geo,
-        status: account.status,
-        monthlyBudget,
-        spend: accountTotals.spend,
-        remaining,
+        buyer: buyer.name,
+        allocated,
+        spend,
+        remaining: allocated - spend,
         usedPct,
-        budgetStatus,
-        replacementNeeded: Boolean(account.replacementNeeded),
-        banDate: account.banDate || ''
+        leads,
+        ftds,
+        cpl: leads > 0 ? spend / leads : 0,
+        revenue,
+        profit,
+        roi: spend > 0 ? (profit / spend) * 100 : 0,
+        status
       };
-    }).sort((a, b) => {
-      const priority = (row: AccountHealthRow) => {
-        if (row.replacementNeeded) return 5;
-        if (['Banned', 'Disabled'].includes(row.status)) return 4;
-        if (row.budgetStatus === 'Over Limit') return 3;
-        if (row.budgetStatus === 'Near Limit') return 2;
-        if (row.status === 'Limited') return 1;
-        return 0;
-      };
-
-      return priority(b) - priority(a) || b.spend - a.spend;
     });
-  }, [database.accounts, filteredRows]);
+  }, [buyers, filteredSpend, buyerAllocations, warningThreshold]);
 
-  const activeAccounts = database.accounts.filter((account) => account.status === 'Active').length;
-  const limitedAccounts = database.accounts.filter((account) => ['Limited', 'Disabled', 'Banned'].includes(String(account.status))).length;
-  const replacementNeeded = database.accounts.filter((account) => account.replacementNeeded).length;
-  const nearLimitAccounts = accountHealthRows.filter((account) => ['Near Limit', 'Over Limit'].includes(account.budgetStatus)).length;
+  function groupPerformance(
+    keyGetter: (entry: DailySpend) => string,
+    fallbackLabel = 'Unknown'
+  ) {
+    const map = new Map<string, {
+      name: string;
+      spend: number;
+      leads: number;
+      ftds: number;
+      revenue: number;
+    }>();
+
+    filteredSpend.forEach((entry) => {
+      const key = keyGetter(entry) || fallbackLabel;
+      const existing = map.get(key) || {
+        name: key,
+        spend: 0,
+        leads: 0,
+        ftds: 0,
+        revenue: 0
+      };
+
+      existing.spend += Number(entry.spend || 0);
+      existing.leads += Number(entry.leads || 0);
+      existing.ftds += Number(entry.ftds || 0);
+      existing.revenue += Number(entry.revenue || 0);
+
+      map.set(key, existing);
+    });
+
+    return Array.from(map.values())
+      .map((row) => {
+        const profit = row.revenue - row.spend;
+
+        return {
+          ...row,
+          cpl: row.leads > 0 ? row.spend / row.leads : 0,
+          cpa: row.ftds > 0 ? row.spend / row.ftds : 0,
+          profit,
+          roi: row.spend > 0 ? (profit / row.spend) * 100 : 0
+        };
+      })
+      .sort((a, b) => b.spend - a.spend);
+  }
+
+  const geoPerformance = groupPerformance((entry) => entry.geo, 'No Geo');
+  const offerPerformance = groupPerformance((entry) => getOfferName(entry.offer_id), 'No Offer');
+  const agencyPerformance = groupPerformance((entry) => getAgencyName(entry.agency_id), 'No Agency');
+
+  const accountHealth = useMemo(() => {
+    return accounts.map((account) => {
+      const accountEntries = filteredSpend.filter((entry) => entry.ad_account_id === account.id);
+
+      const spend = accountEntries.reduce((sum, entry) => sum + Number(entry.spend || 0), 0);
+      const leads = accountEntries.reduce((sum, entry) => sum + Number(entry.leads || 0), 0);
+      const revenue = accountEntries.reduce((sum, entry) => sum + Number(entry.revenue || 0), 0);
+      const profit = revenue - spend;
+
+      const spendLimit = Number(account.spend_limit || 0);
+      const usedPct = spendLimit > 0 ? (spend / spendLimit) * 100 : 0;
+
+      const budgetStatus =
+        account.replacement_needed
+          ? 'Replacement Needed'
+          : spendLimit > 0 && spend > spendLimit
+            ? 'Over Limit'
+            : spendLimit > 0 && usedPct >= 80
+              ? 'Near Limit'
+              : account.status || 'active';
+
+      return {
+        account,
+        spend,
+        leads,
+        cpl: leads > 0 ? spend / leads : 0,
+        revenue,
+        profit,
+        usedPct,
+        budgetStatus
+      };
+    });
+  }, [accounts, filteredSpend]);
+
+  const latestEntries = [...filteredSpend]
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 12);
 
   return (
     <>
-      <PageTitle title="Dashboard" subtitle="Performance filtered by date range across spend, buyers, agencies, geos, offers and budget pool usage." />
+      <PageTitle
+        title="Dashboard"
+        subtitle="Real-time performance dashboard connected to Supabase daily spend data."
+      />
 
       <div className="card" style={{ marginBottom: 18 }}>
         <h2>Date Range</h2>
-        <p className="muted">Current view: {rangeLabel}</p>
 
-        <div className="form">
+        <div className="filter-bar">
           <label>
             Start Date
             <input
               type="date"
               value={startDate}
-              onChange={(event) => {
-                setStartDate(event.target.value);
+              onChange={(e) => {
+                setStartDate(e.target.value);
                 setRangeLabel('Custom Range');
               }}
             />
@@ -291,141 +428,349 @@ export default function DashboardPage() {
             <input
               type="date"
               value={endDate}
-              onChange={(event) => {
-                setEndDate(event.target.value);
+              onChange={(e) => {
+                setEndDate(e.target.value);
                 setRangeLabel('Custom Range');
               }}
             />
           </label>
+
+          <button className="btn small secondary" type="button" onClick={() => setQuickRange('today')}>
+            Today
+          </button>
+
+          <button className="btn small secondary" type="button" onClick={() => setQuickRange('yesterday')}>
+            Yesterday
+          </button>
+
+          <button className="btn small secondary" type="button" onClick={() => setQuickRange('last7')}>
+            Last 7 Days
+          </button>
+
+          <button className="btn small secondary" type="button" onClick={() => setQuickRange('month')}>
+            This Month
+          </button>
+
+          <button className="btn small secondary" type="button" onClick={() => setQuickRange('all')}>
+            All Time
+          </button>
+
+          <button className="btn small" type="button" onClick={loadDashboardData}>
+            Refresh
+          </button>
         </div>
 
-        <div className="actions" style={{ marginTop: 14, flexWrap: 'wrap' }}>
-          <button className="btn secondary" type="button" onClick={() => applyRange('Today', today, today)}>Today</button>
-          <button className="btn secondary" type="button" onClick={() => applyRange('Yesterday', getPastDate(1), getPastDate(1))}>Yesterday</button>
-          <button className="btn secondary" type="button" onClick={() => applyRange('Last 7 Days', getPastDate(6), today)}>Last 7 Days</button>
-          <button className="btn secondary" type="button" onClick={() => applyRange('This Month', monthStart, today)}>This Month</button>
-          <button className="btn secondary" type="button" onClick={() => applyRange('All Time', '', '')}>All Time</button>
-        </div>
+        <p className="muted">
+          Current view: <strong>{rangeLabel}</strong>
+        </p>
+
+        {message && <p className="negative">{message}</p>}
       </div>
 
-      <section className="grid grid-4">
-        <MetricCard label="Total Spend" value={money(t.spend)} sub={`${filteredRows.length} entries in range`} />
-        <MetricCard label="Leads" value={String(t.leads)} sub={`Average CPL ${money(t.cpl)}`} />
-        <MetricCard label="FTDs / Sales" value={String(t.ftds)} sub={`Average CPA ${money(t.cpa)}`} />
-        <MetricCard label="Profit / ROI" value={money(t.profit)} sub={pct(t.roi)} />
-      </section>
-
-      <section className="grid grid-4" style={{ marginTop: 18 }}>
-        <MetricCard label="Pool Budget" value={money(database.budgetPool.totalBudget)} sub={database.budgetPool.name} />
-        <MetricCard label="Pool Spent" value={money(t.spend)} sub={`${pct(poolUsedPct)} used in range`} />
-        <MetricCard label="Remaining Pool" value={money(poolRemaining)} sub={poolRemaining >= 0 ? 'Available after selected spend' : 'Over budget'} />
-        <MetricCard label="Budget Status" value={poolStatus} sub={`Warning at ${database.budgetPool.warningThresholdPct}%`} />
-      </section>
-
-      <section className="grid grid-4" style={{ marginTop: 18 }}>
-        <MetricCard label="Active Accounts" value={String(activeAccounts)} sub="Currently marked active" />
-        <MetricCard label="Limited / Banned" value={String(limitedAccounts)} sub="Needs attention" />
-        <MetricCard label="Near Account Limit" value={String(nearLimitAccounts)} sub="Budget usage warning" />
-        <MetricCard label="Replacement Needed" value={String(replacementNeeded)} sub="Marked in Accounts" />
-      </section>
-
-      <section style={{ marginTop: 18 }}>
-        <div className="card table-wrap">
-          <h2>Media Buyer Budget Pool</h2>
-          <p className="muted">Buyer spend and remaining allocation for the selected date range.</p>
-          <table>
-            <thead>
-              <tr><th>Buyer</th><th>Pool Budget</th><th>Spent</th><th>Remaining</th><th>Used</th><th>Leads</th><th>CPL</th><th>Profit</th><th>Status</th></tr>
-            </thead>
-            <tbody>
-              {buyerRows.map((b) => (
-                <tr key={b.buyer}>
-                  <td>{b.buyer}</td>
-                  <td>{money(b.poolBudget)}</td>
-                  <td>{money(b.spent)}</td>
-                  <td className={b.remaining >= 0 ? 'positive' : 'negative'}>{money(b.remaining)}</td>
-                  <td>
-                    <div className="progress-cell">
-                      <div className="progress-bar"><span style={{ width: `${Math.min(b.usedPct, 100)}%` }} /></div>
-                      <strong>{pct(b.usedPct)}</strong>
-                    </div>
-                  </td>
-                  <td>{b.leads}</td>
-                  <td>{money(b.cpl)}</td>
-                  <td className={b.profit >= 0 ? 'positive' : 'negative'}>{money(b.profit)}</td>
-                  <td><span className={`badge ${statusClass(b.status)}`}>{b.status}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section style={{ marginTop: 18 }}>
-        <AccountHealthTable rows={accountHealthRows} />
-      </section>
-
-      <section className="grid grid-2" style={{ marginTop: 18 }}>
-        <PerformanceTable title="Geo Performance" rows={geoRows} />
-        <PerformanceTable title="Offer Performance" rows={offerRows} />
-      </section>
-
-      <section className="grid grid-2" style={{ marginTop: 18 }}>
-        <PerformanceTable title="Agency Performance" rows={agencyRows} />
-        <PerformanceTable title="Buyer Performance" rows={buyerPerformanceRows} />
-      </section>
-
-      <section className="grid grid-2" style={{ marginTop: 18 }}>
+      {loading ? (
         <div className="card">
-          <h2>Latest Spend Entries</h2>
-          <div className="table-wrap">
-            <table>
-              <thead><tr><th>Date</th><th>Account</th><th>Geo</th><th>Offer</th><th>Spend</th><th>Leads</th><th>CPL</th><th>Status</th></tr></thead>
-              <tbody>
-                {filteredRows.slice(0, 8).map((r, index) => (
-                  <tr key={`${r.date}-${r.account}-${r.offer}-${index}`}>
-                    <td>{r.date}</td>
-                    <td>{r.account}</td>
-                    <td>{r.geo}</td>
-                    <td>{r.offer}</td>
-                    <td>{money(r.spend)}</td>
-                    <td>{r.leads}</td>
-                    <td>{money(r.leads ? r.spend / r.leads : 0)}</td>
-                    <td><span className={`badge ${statusClass(r.status)}`}>{r.status}</span></td>
+          <h2>Loading dashboard from Supabase...</h2>
+        </div>
+      ) : (
+        <>
+          <section className="grid grid-4">
+            <MetricCard label="Total Spend" value={money(totals.spend)} sub="Selected date range" />
+            <MetricCard label="Leads" value={String(totals.leads)} sub={`Average CPL ${money(totals.cpl)}`} />
+            <MetricCard label="FTDs / Sales" value={String(totals.ftds)} sub={`Average CPA ${money(totals.cpa)}`} />
+            <MetricCard label="Profit / ROI" value={money(totals.profit)} sub={pct(totals.roi)} />
+          </section>
+
+          <section className="grid grid-4" style={{ marginTop: 18 }}>
+            <MetricCard label="Pool Budget" value={money(poolBudget)} sub={currentBudgetPool?.name || 'Default pool'} />
+            <MetricCard label="Pool Spent" value={money(poolSpent)} sub={`${pct(poolUsedPct)} used`} />
+            <MetricCard label="Remaining Pool" value={money(poolRemaining)} sub={poolRemaining >= 0 ? 'Available budget' : 'Over budget'} />
+            <MetricCard label="Budget Status" value={poolStatus} sub={`Warning at ${warningThreshold}%`} />
+          </section>
+
+          <section className="grid grid-4" style={{ marginTop: 18 }}>
+            <MetricCard label="Active Accounts" value={String(accounts.filter((a) => a.status === 'active').length)} sub="Currently active" />
+            <MetricCard label="Limited / Banned" value={String(accounts.filter((a) => ['limited', 'disabled', 'banned'].includes(String(a.status))).length)} sub="Need attention" />
+            <MetricCard label="Replacement Needed" value={String(accounts.filter((a) => a.replacement_needed).length)} sub="Accounts marked for replacement" />
+            <MetricCard label="Spend Entries" value={String(filteredSpend.length)} sub="Rows in selected range" />
+          </section>
+
+          <section style={{ marginTop: 18 }}>
+            <div className="card table-wrap">
+              <h2>Media Buyer Budget Usage</h2>
+
+              <table>
+                <thead>
+                  <tr>
+                    <th>Buyer</th>
+                    <th>Allocated</th>
+                    <th>Spent</th>
+                    <th>Remaining</th>
+                    <th>Used</th>
+                    <th>Leads</th>
+                    <th>CPL</th>
+                    <th>FTDs</th>
+                    <th>Profit</th>
+                    <th>ROI</th>
+                    <th>Status</th>
                   </tr>
-                ))}
-                {filteredRows.length === 0 && (
-                  <tr><td colSpan={8} className="muted">No spend entries in this date range.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                </thead>
 
-        <div className="card">
-          <h2>Immediate Alerts</h2>
-          <table>
-            <tbody>
-              <tr><td><span className={`badge ${statusClass(poolStatus)}`}>Budget</span></td><td>Shared pool has {money(poolRemaining)} remaining after selected range spend.</td></tr>
-              {accountHealthRows.filter((account) => account.replacementNeeded).slice(0, 3).map((account) => (
-                <tr key={`${account.name}-replacement`}><td><span className="badge red">Account</span></td><td>{account.name} needs a replacement account.</td></tr>
-              ))}
-              {accountHealthRows.filter((account) => ['Near Limit', 'Over Limit'].includes(account.budgetStatus)).slice(0, 3).map((account) => (
-                <tr key={`${account.name}-limit`}><td><span className="badge amber">Limit</span></td><td>{account.name} used {pct(account.usedPct)} of its account budget.</td></tr>
-              ))}
-              {filteredRows.filter((r) => r.status === 'Loss').slice(0, 3).map((r, index) => (
-                <tr key={`${r.account}-${index}`}><td><span className="badge red">Loss</span></td><td>{r.geo} {r.offer} spent {money(r.spend)} with revenue of {money(r.revenue)}.</td></tr>
-              ))}
-              {filteredRows.filter((r) => r.status === 'Profitable').slice(0, 2).map((r, index) => (
-                <tr key={`${r.account}-scale-${index}`}><td><span className="badge green">Scale</span></td><td>{r.geo} {r.offer} is profitable and can be reviewed for budget increase.</td></tr>
-              ))}
-              {filteredRows.length === 0 && (
-                <tr><td><span className="badge amber">Empty</span></td><td>No data exists in this selected range.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+                <tbody>
+                  {buyerUsage.length === 0 ? (
+                    <tr>
+                      <td colSpan={11}>No buyers yet.</td>
+                    </tr>
+                  ) : (
+                    buyerUsage.map((buyer) => (
+                      <tr key={buyer.buyer}>
+                        <td>{buyer.buyer}</td>
+                        <td>{money(buyer.allocated)}</td>
+                        <td>{money(buyer.spend)}</td>
+                        <td className={buyer.remaining >= 0 ? 'positive' : 'negative'}>
+                          {money(buyer.remaining)}
+                        </td>
+                        <td>
+                          <div className="progress-cell">
+                            <div className="progress-bar">
+                              <span style={{ width: `${Math.min(buyer.usedPct, 100)}%` }} />
+                            </div>
+                            <strong>{pct(buyer.usedPct)}</strong>
+                          </div>
+                        </td>
+                        <td>{buyer.leads}</td>
+                        <td>{money(buyer.cpl)}</td>
+                        <td>{buyer.ftds}</td>
+                        <td className={buyer.profit >= 0 ? 'positive' : 'negative'}>
+                          {money(buyer.profit)}
+                        </td>
+                        <td>{pct(buyer.roi)}</td>
+                        <td>
+                          <span className={`badge ${statusClass(buyer.status)}`}>
+                            {buyer.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="grid grid-3" style={{ marginTop: 18 }}>
+            <PerformanceTable title="Geo Performance" rows={geoPerformance} />
+            <PerformanceTable title="Offer Performance" rows={offerPerformance} />
+            <PerformanceTable title="Agency Performance" rows={agencyPerformance} />
+          </section>
+
+          <section style={{ marginTop: 18 }}>
+            <div className="card table-wrap">
+              <h2>Account Health</h2>
+
+              <table>
+                <thead>
+                  <tr>
+                    <th>Account</th>
+                    <th>Geo</th>
+                    <th>Status</th>
+                    <th>Spend</th>
+                    <th>Leads</th>
+                    <th>CPL</th>
+                    <th>Profit</th>
+                    <th>Limit Used</th>
+                    <th>Budget Status</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {accountHealth.length === 0 ? (
+                    <tr>
+                      <td colSpan={9}>No accounts yet.</td>
+                    </tr>
+                  ) : (
+                    accountHealth.map((row) => (
+                      <tr key={row.account.id}>
+                        <td>{row.account.account_name}</td>
+                        <td>{row.account.geo || '-'}</td>
+                        <td>
+                          <span className={`badge ${statusClass(row.account.status)}`}>
+                            {row.account.status || 'active'}
+                          </span>
+                        </td>
+                        <td>{money(row.spend)}</td>
+                        <td>{row.leads}</td>
+                        <td>{money(row.cpl)}</td>
+                        <td className={row.profit >= 0 ? 'positive' : 'negative'}>
+                          {money(row.profit)}
+                        </td>
+                        <td>{pct(row.usedPct)}</td>
+                        <td>
+                          <span className={`badge ${statusClass(row.budgetStatus)}`}>
+                            {row.budgetStatus}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section className="grid grid-2" style={{ marginTop: 18 }}>
+            <div className="card table-wrap">
+              <h2>Latest Spend Entries</h2>
+
+              <table>
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Account</th>
+                    <th>Buyer</th>
+                    <th>Geo</th>
+                    <th>Offer</th>
+                    <th>Spend</th>
+                    <th>Leads</th>
+                    <th>CPL</th>
+                  </tr>
+                </thead>
+
+                <tbody>
+                  {latestEntries.length === 0 ? (
+                    <tr>
+                      <td colSpan={8}>No spend entries in this range.</td>
+                    </tr>
+                  ) : (
+                    latestEntries.map((entry) => {
+                      const cpl = entry.leads > 0 ? entry.spend / entry.leads : 0;
+
+                      return (
+                        <tr key={entry.id}>
+                          <td>{entry.date}</td>
+                          <td>{getAccountName(entry.ad_account_id)}</td>
+                          <td>{getBuyerName(entry.buyer_id)}</td>
+                          <td>{entry.geo}</td>
+                          <td>{getOfferName(entry.offer_id)}</td>
+                          <td>{money(entry.spend)}</td>
+                          <td>{entry.leads}</td>
+                          <td>{money(cpl)}</td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="card">
+              <h2>Immediate Alerts</h2>
+
+              <table>
+                <tbody>
+                  <tr>
+                    <td>
+                      <span className={`badge ${statusClass(poolStatus)}`}>Budget</span>
+                    </td>
+                    <td>Shared pool has {money(poolRemaining)} remaining.</td>
+                  </tr>
+
+                  {buyerUsage
+                    .filter((buyer) => buyer.status !== 'Healthy')
+                    .slice(0, 4)
+                    .map((buyer) => (
+                      <tr key={buyer.buyer}>
+                        <td>
+                          <span className={`badge ${statusClass(buyer.status)}`}>
+                            {buyer.status}
+                          </span>
+                        </td>
+                        <td>
+                          {buyer.buyer}: spent {money(buyer.spend)}, profit {money(buyer.profit)}.
+                        </td>
+                      </tr>
+                    ))}
+
+                  {accountHealth
+                    .filter((row) => row.budgetStatus !== 'active' && row.budgetStatus !== 'Healthy')
+                    .slice(0, 4)
+                    .map((row) => (
+                      <tr key={row.account.id}>
+                        <td>
+                          <span className={`badge ${statusClass(row.budgetStatus)}`}>
+                            Account
+                          </span>
+                        </td>
+                        <td>
+                          {row.account.account_name}: {row.budgetStatus}.
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </>
+      )}
     </>
+  );
+}
+
+function PerformanceTable({
+  title,
+  rows
+}: {
+  title: string;
+  rows: {
+    name: string;
+    spend: number;
+    leads: number;
+    ftds: number;
+    revenue: number;
+    cpl: number;
+    cpa: number;
+    profit: number;
+    roi: number;
+  }[];
+}) {
+  return (
+    <div className="card table-wrap">
+      <h2>{title}</h2>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Spend</th>
+            <th>Leads</th>
+            <th>CPL</th>
+            <th>FTDs</th>
+            <th>Profit</th>
+            <th>ROI</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={7}>No data in this range.</td>
+            </tr>
+          ) : (
+            rows.slice(0, 10).map((row) => (
+              <tr key={row.name}>
+                <td>{row.name}</td>
+                <td>{money(row.spend)}</td>
+                <td>{row.leads}</td>
+                <td>{money(row.cpl)}</td>
+                <td>{row.ftds}</td>
+                <td className={row.profit >= 0 ? 'positive' : 'negative'}>
+                  {money(row.profit)}
+                </td>
+                <td>{pct(row.roi)}</td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 }
