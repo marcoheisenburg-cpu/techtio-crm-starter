@@ -1,61 +1,116 @@
 'use client';
 
-import { ChangeEvent, FormEvent, useMemo, useRef, useState } from 'react';
+import { ChangeEvent, useEffect, useMemo, useState } from 'react';
 import { PageTitle } from '@/components/PageTitle';
-import { DailySpend, money, pct, statusClass, totals } from '@/lib/mock-data';
-import { useCrmDatabase } from '@/lib/local-db';
+import { supabase } from '@/lib/supabase-client';
 
-const today = new Date().toISOString().slice(0, 10);
-const monthStart = today.slice(0, 8) + '01';
+type Agency = {
+  id: string;
+  name: string;
+};
 
-const csvHeaders = ['date', 'buyer', 'agency', 'account', 'geo', 'offer', 'spend', 'leads', 'ftds', 'revenue', 'status'] as const;
+type Buyer = {
+  id: string;
+  name: string;
+};
 
-type SortKey = keyof Pick<DailySpend, 'date' | 'buyer' | 'agency' | 'account' | 'geo' | 'offer' | 'spend' | 'leads' | 'ftds' | 'revenue' | 'status'> | 'cpl' | 'profit';
-type SortDirection = 'asc' | 'desc';
+type Offer = {
+  id: string;
+  name: string;
+  geo: string;
+};
 
-type SpendRowWithIndex = DailySpend & {
-  originalIndex: number;
-  cpl: number;
-  profit: number;
+type AdAccount = {
+  id: string;
+  account_name: string;
+  agency_id: string | null;
+  buyer_id: string | null;
+  geo: string | null;
+};
+
+type DailySpend = {
+  id: string;
+  date: string;
+  ad_account_id: string | null;
+  buyer_id: string | null;
+  agency_id: string | null;
+  offer_id: string | null;
+  geo: string;
+  spend: number;
+  leads: number;
+  ftds: number;
+  revenue: number;
+  notes: string | null;
+  created_at?: string;
 };
 
 type SpendForm = {
   date: string;
-  account: string;
-  agency: string;
-  buyer: string;
+  ad_account_id: string;
+  agency_id: string;
+  buyer_id: string;
+  offer_id: string;
   geo: string;
-  offer: string;
   spend: string;
   leads: string;
   ftds: string;
   revenue: string;
+  notes: string;
 };
+
+type SortKey =
+  | 'date'
+  | 'account'
+  | 'agency'
+  | 'buyer'
+  | 'geo'
+  | 'offer'
+  | 'spend'
+  | 'leads'
+  | 'cpl'
+  | 'ftds'
+  | 'cpa'
+  | 'revenue'
+  | 'profit'
+  | 'roi';
+
+type SortDirection = 'asc' | 'desc';
+
+const today = new Date().toISOString().slice(0, 10);
 
 const emptyForm: SpendForm = {
   date: today,
-  account: '',
-  agency: '',
-  buyer: '',
+  ad_account_id: '',
+  agency_id: '',
+  buyer_id: '',
+  offer_id: '',
   geo: '',
-  offer: '',
-  spend: '',
-  leads: '',
-  ftds: '',
-  revenue: ''
+  spend: '0',
+  leads: '0',
+  ftds: '0',
+  revenue: '0',
+  notes: ''
 };
 
-function sortValue(row: SpendRowWithIndex, key: SortKey) {
-  if (key === 'cpl') return row.cpl;
-  if (key === 'profit') return row.profit;
-  return row[key];
+function money(value: number) {
+  return `$${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  })}`;
 }
 
-function unique(values: string[]) {
-  return Array.from(new Set(values.filter(Boolean))).sort((a, b) => a.localeCompare(b));
+function pct(value: number) {
+  return `${Number(value || 0).toLocaleString(undefined, {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1
+  })}%`;
 }
 
-function escapeCsvValue(value: string | number) {
+function toNumber(value: string | number | null | undefined) {
+  return Number(value || 0);
+}
+
+function csvEscape(value: string | number | null | undefined) {
   const text = String(value ?? '');
   if (text.includes(',') || text.includes('"') || text.includes('\n')) {
     return `"${text.replace(/"/g, '""')}"`;
@@ -63,21 +118,10 @@ function escapeCsvValue(value: string | number) {
   return text;
 }
 
-function rowsToCsv(rows: DailySpend[]) {
-  const lines = [csvHeaders.join(',')];
-
-  rows.forEach((row) => {
-    lines.push(csvHeaders.map((header) => escapeCsvValue(row[header])).join(','));
-  });
-
-  return lines.join('\n');
-}
-
-function downloadTextFile(filename: string, content: string, type = 'text/csv;charset=utf-8;') {
+function downloadFile(filename: string, content: string, type = 'text/csv;charset=utf-8;') {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-
   link.href = url;
   link.download = filename;
   document.body.appendChild(link);
@@ -86,136 +130,109 @@ function downloadTextFile(filename: string, content: string, type = 'text/csv;ch
   URL.revokeObjectURL(url);
 }
 
-function parseCsvLine(line: string) {
-  const values: string[] = [];
+function parseCsv(text: string) {
+  const rows: string[][] = [];
   let current = '';
+  let row: string[] = [];
   let inQuotes = false;
 
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    const nextChar = line[i + 1];
+  for (let i = 0; i < text.length; i += 1) {
+    const char = text[i];
+    const next = text[i + 1];
 
-    if (char === '"' && inQuotes && nextChar === '"') {
+    if (char === '"' && inQuotes && next === '"') {
       current += '"';
       i += 1;
-      continue;
-    }
-
-    if (char === '"') {
+    } else if (char === '"') {
       inQuotes = !inQuotes;
-      continue;
-    }
-
-    if (char === ',' && !inQuotes) {
-      values.push(current);
+    } else if (char === ',' && !inQuotes) {
+      row.push(current.trim());
       current = '';
-      continue;
+    } else if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && next === '\n') i += 1;
+      row.push(current.trim());
+      if (row.some((cell) => cell.length > 0)) rows.push(row);
+      row = [];
+      current = '';
+    } else {
+      current += char;
     }
-
-    current += char;
   }
 
-  values.push(current);
-  return values;
-}
+  row.push(current.trim());
+  if (row.some((cell) => cell.length > 0)) rows.push(row);
 
-function parseSpendCsv(csv: string) {
-  const lines = csv
-    .replace(/^\uFEFF/, '')
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  if (lines.length < 2) return [];
-
-  const headers = parseCsvLine(lines[0]).map((header) => header.trim().toLowerCase());
-
-  return lines.slice(1).map((line) => {
-    const values = parseCsvLine(line);
-    const row: Record<string, string> = {};
-
-    headers.forEach((header, index) => {
-      row[header] = values[index] || '';
-    });
-
-    return {
-      date: row.date,
-      buyer: row.buyer,
-      agency: row.agency,
-      account: row.account,
-      geo: row.geo,
-      offer: row.offer,
-      spend: Number(row.spend || 0),
-      leads: Number(row.leads || 0),
-      ftds: Number(row.ftds || 0),
-      revenue: Number(row.revenue || 0),
-      status: row.status as DailySpend['status']
-    };
-  });
-}
-
-function SortButton({
-  label,
-  sortKey,
-  activeKey,
-  direction,
-  onSort
-}: {
-  label: string;
-  sortKey: SortKey;
-  activeKey: SortKey;
-  direction: SortDirection;
-  onSort: (key: SortKey) => void;
-}) {
-  const active = activeKey === sortKey;
-
-  return (
-    <button
-      type="button"
-      onClick={() => onSort(sortKey)}
-      style={{
-        border: 0,
-        background: 'transparent',
-        padding: 0,
-        color: 'inherit',
-        font: 'inherit',
-        fontWeight: 900,
-        textTransform: 'uppercase',
-        letterSpacing: '.04em',
-        cursor: 'pointer'
-      }}
-      title={`Sort by ${label}`}
-    >
-      {label} {active ? (direction === 'asc' ? '↑' : '↓') : ''}
-    </button>
-  );
+  return rows;
 }
 
 export default function DailySpendPage() {
-  const { database, addDailySpend, importDailySpend, deleteDailySpend } = useCrmDatabase();
-  const importInputRef = useRef<HTMLInputElement | null>(null);
+  const [entries, setEntries] = useState<DailySpend[]>([]);
+  const [accounts, setAccounts] = useState<AdAccount[]>([]);
+  const [agencies, setAgencies] = useState<Agency[]>([]);
+  const [buyers, setBuyers] = useState<Buyer[]>([]);
+  const [offers, setOffers] = useState<Offer[]>([]);
   const [form, setForm] = useState<SpendForm>(emptyForm);
-  const [saved, setSaved] = useState(false);
-  const [importMessage, setImportMessage] = useState('');
-  const [startDate, setStartDate] = useState(monthStart);
-  const [endDate, setEndDate] = useState(today);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState('');
+
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('date');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
 
-  const selectedAccount = database.accounts.find((account) => account.name === form.account);
+  async function loadData() {
+    setLoading(true);
+    setMessage('');
 
-  const availableOffers = useMemo(() => {
-    const matchingGeoOffers = database.offers.filter((offer) => !form.geo || offer.geo === form.geo);
-    return matchingGeoOffers.length ? matchingGeoOffers : database.offers;
-  }, [database.offers, form.geo]);
+    const [spendResult, accountsResult, agenciesResult, buyersResult, offersResult] = await Promise.all([
+      supabase.from('daily_spend').select('*').order('date', { ascending: false }),
+      supabase.from('ad_accounts').select('id, account_name, agency_id, buyer_id, geo').order('account_name', { ascending: true }),
+      supabase.from('agencies').select('id, name').order('name', { ascending: true }),
+      supabase.from('buyers').select('id, name').order('name', { ascending: true }),
+      supabase.from('offers').select('id, name, geo').order('name', { ascending: true })
+    ]);
 
-  const savedBuyers = useMemo(() => unique(database.buyerBudgets.map((b) => b.buyer)), [database.buyerBudgets]);
-  const savedAgencies = useMemo(() => unique(database.agencies.map((a) => a.name)), [database.agencies]);
-  const savedGeos = useMemo(() => unique([
-    ...database.accounts.map((a) => a.geo),
-    ...database.offers.map((o) => o.geo),
-    ...database.dailySpend.map((r) => r.geo)
-  ]), [database.accounts, database.offers, database.dailySpend]);
+    if (spendResult.error) {
+      setMessage(`Failed to load daily spend: ${spendResult.error.message}`);
+      setLoading(false);
+      return;
+    }
+
+    if (accountsResult.error || agenciesResult.error || buyersResult.error || offersResult.error) {
+      setMessage('Failed to load accounts, agencies, buyers or offers from Supabase.');
+      setLoading(false);
+      return;
+    }
+
+    setEntries((spendResult.data || []) as DailySpend[]);
+    setAccounts((accountsResult.data || []) as AdAccount[]);
+    setAgencies((agenciesResult.data || []) as Agency[]);
+    setBuyers((buyersResult.data || []) as Buyer[]);
+    setOffers((offersResult.data || []) as Offer[]);
+    setLoading(false);
+  }
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  function getAccountName(id: string | null) {
+    return accounts.find((account) => account.id === id)?.account_name || '-';
+  }
+
+  function getAgencyName(id: string | null) {
+    return agencies.find((agency) => agency.id === id)?.name || '-';
+  }
+
+  function getBuyerName(id: string | null) {
+    return buyers.find((buyer) => buyer.id === id)?.name || '-';
+  }
+
+  function getOfferName(id: string | null) {
+    return offers.find((offer) => offer.id === id)?.name || '-';
+  }
 
   function updateField(field: keyof SpendForm, value: string) {
     setForm((current) => ({
@@ -224,336 +241,606 @@ export default function DailySpendPage() {
     }));
   }
 
-  function selectAccount(accountName: string) {
-    const account = database.accounts.find((row) => row.name === accountName);
-
-    if (!account) {
-      setForm((current) => ({
-        ...current,
-        account: accountName
-      }));
-      return;
-    }
-
-    const firstMatchingOffer = database.offers.find((offer) => offer.geo === account.geo);
+  function handleAccountChange(accountId: string) {
+    const selectedAccount = accounts.find((account) => account.id === accountId);
 
     setForm((current) => ({
       ...current,
-      account: account.name,
-      agency: account.agency,
-      buyer: account.buyer,
-      geo: account.geo,
-      offer: current.offer && database.offers.some((offer) => offer.name === current.offer && offer.geo === account.geo)
-        ? current.offer
-        : firstMatchingOffer?.name || current.offer
+      ad_account_id: accountId,
+      agency_id: selectedAccount?.agency_id || '',
+      buyer_id: selectedAccount?.buyer_id || '',
+      geo: selectedAccount?.geo || current.geo
     }));
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  function resetForm() {
+    setForm(emptyForm);
+    setEditingId(null);
+    setMessage('');
+  }
 
-    addDailySpend({
-      date: form.date || today,
-      buyer: form.buyer.trim(),
-      agency: form.agency.trim(),
-      account: form.account.trim(),
+  function editEntry(entry: DailySpend) {
+    setEditingId(entry.id);
+    setForm({
+      date: entry.date,
+      ad_account_id: entry.ad_account_id || '',
+      agency_id: entry.agency_id || '',
+      buyer_id: entry.buyer_id || '',
+      offer_id: entry.offer_id || '',
+      geo: entry.geo || '',
+      spend: String(entry.spend || 0),
+      leads: String(entry.leads || 0),
+      ftds: String(entry.ftds || 0),
+      revenue: String(entry.revenue || 0),
+      notes: entry.notes || ''
+    });
+    setMessage('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  async function saveEntry() {
+    if (!form.date) {
+      setMessage('Date is required.');
+      return;
+    }
+
+    if (!form.ad_account_id) {
+      setMessage('Ad account is required.');
+      return;
+    }
+
+    if (!form.geo.trim()) {
+      setMessage('Geo is required.');
+      return;
+    }
+
+    setSaving(true);
+    setMessage('');
+
+    const payload = {
+      date: form.date,
+      ad_account_id: form.ad_account_id || null,
+      agency_id: form.agency_id || null,
+      buyer_id: form.buyer_id || null,
+      offer_id: form.offer_id || null,
       geo: form.geo.trim(),
-      offer: form.offer.trim(),
       spend: Number(form.spend || 0),
       leads: Number(form.leads || 0),
       ftds: Number(form.ftds || 0),
-      revenue: Number(form.revenue || 0)
-    });
+      revenue: Number(form.revenue || 0),
+      notes: form.notes.trim() || null
+    };
 
+    if (editingId) {
+      const { error } = await supabase
+        .from('daily_spend')
+        .update(payload)
+        .eq('id', editingId);
+
+      if (error) {
+        setMessage(`Failed to update entry: ${error.message}`);
+        setSaving(false);
+        return;
+      }
+
+      setMessage('Daily spend entry updated successfully.');
+    } else {
+      const { error } = await supabase
+        .from('daily_spend')
+        .insert(payload);
+
+      if (error) {
+        setMessage(`Failed to add entry: ${error.message}`);
+        setSaving(false);
+        return;
+      }
+
+      setMessage('Daily spend entry added successfully.');
+    }
+
+    setSaving(false);
     setForm(emptyForm);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2500);
+    setEditingId(null);
+    await loadData();
   }
 
-  function handleSort(nextKey: SortKey) {
-    if (nextKey === sortKey) {
+  async function deleteEntry(id: string) {
+    const confirmed = window.confirm('Delete this daily spend entry? This cannot be undone.');
+    if (!confirmed) return;
+
+    const { error } = await supabase
+      .from('daily_spend')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      setMessage(`Failed to delete entry: ${error.message}`);
+      return;
+    }
+
+    setMessage('Daily spend entry deleted successfully.');
+    await loadData();
+  }
+
+  function setQuickRange(range: 'today' | 'yesterday' | 'last7' | 'month' | 'all') {
+    const now = new Date();
+    const yyyyMmDd = (date: Date) => date.toISOString().slice(0, 10);
+
+    if (range === 'all') {
+      setStartDate('');
+      setEndDate('');
+      return;
+    }
+
+    if (range === 'today') {
+      const d = yyyyMmDd(now);
+      setStartDate(d);
+      setEndDate(d);
+      return;
+    }
+
+    if (range === 'yesterday') {
+      const yesterday = new Date(now);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const d = yyyyMmDd(yesterday);
+      setStartDate(d);
+      setEndDate(d);
+      return;
+    }
+
+    if (range === 'last7') {
+      const start = new Date(now);
+      start.setDate(start.getDate() - 6);
+      setStartDate(yyyyMmDd(start));
+      setEndDate(yyyyMmDd(now));
+      return;
+    }
+
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    setStartDate(yyyyMmDd(start));
+    setEndDate(yyyyMmDd(now));
+  }
+
+  const visibleOffers = useMemo(() => {
+    const sameGeoOffers = offers.filter((offer) =>
+      form.geo ? offer.geo.toLowerCase() === form.geo.toLowerCase() : true
+    );
+
+    const otherOffers = offers.filter((offer) =>
+      form.geo ? offer.geo.toLowerCase() !== form.geo.toLowerCase() : false
+    );
+
+    return [...sameGeoOffers, ...otherOffers];
+  }, [offers, form.geo]);
+
+  const filteredEntries = useMemo(() => {
+    const filtered = entries.filter((entry) => {
+      if (startDate && entry.date < startDate) return false;
+      if (endDate && entry.date > endDate) return false;
+      return true;
+    });
+
+    const sorted = [...filtered].sort((a, b) => {
+      const cplA = a.leads > 0 ? a.spend / a.leads : 0;
+      const cplB = b.leads > 0 ? b.spend / b.leads : 0;
+      const cpaA = a.ftds > 0 ? a.spend / a.ftds : 0;
+      const cpaB = b.ftds > 0 ? b.spend / b.ftds : 0;
+      const profitA = a.revenue - a.spend;
+      const profitB = b.revenue - b.spend;
+      const roiA = a.spend > 0 ? (profitA / a.spend) * 100 : 0;
+      const roiB = b.spend > 0 ? (profitB / b.spend) * 100 : 0;
+
+      const values: Record<SortKey, [string | number, string | number]> = {
+        date: [a.date, b.date],
+        account: [getAccountName(a.ad_account_id), getAccountName(b.ad_account_id)],
+        agency: [getAgencyName(a.agency_id), getAgencyName(b.agency_id)],
+        buyer: [getBuyerName(a.buyer_id), getBuyerName(b.buyer_id)],
+        geo: [a.geo, b.geo],
+        offer: [getOfferName(a.offer_id), getOfferName(b.offer_id)],
+        spend: [a.spend, b.spend],
+        leads: [a.leads, b.leads],
+        cpl: [cplA, cplB],
+        ftds: [a.ftds, b.ftds],
+        cpa: [cpaA, cpaB],
+        revenue: [a.revenue, b.revenue],
+        profit: [profitA, profitB],
+        roi: [roiA, roiB]
+      };
+
+      const [valueA, valueB] = values[sortKey];
+
+      if (typeof valueA === 'number' && typeof valueB === 'number') {
+        return sortDirection === 'asc' ? valueA - valueB : valueB - valueA;
+      }
+
+      return sortDirection === 'asc'
+        ? String(valueA).localeCompare(String(valueB))
+        : String(valueB).localeCompare(String(valueA));
+    });
+
+    return sorted;
+  }, [entries, startDate, endDate, sortKey, sortDirection, accounts, agencies, buyers, offers]);
+
+  const totals = useMemo(() => {
+    const spend = filteredEntries.reduce((sum, entry) => sum + toNumber(entry.spend), 0);
+    const leads = filteredEntries.reduce((sum, entry) => sum + toNumber(entry.leads), 0);
+    const ftds = filteredEntries.reduce((sum, entry) => sum + toNumber(entry.ftds), 0);
+    const revenue = filteredEntries.reduce((sum, entry) => sum + toNumber(entry.revenue), 0);
+    const profit = revenue - spend;
+
+    return {
+      spend,
+      leads,
+      ftds,
+      revenue,
+      profit,
+      cpl: leads > 0 ? spend / leads : 0,
+      cpa: ftds > 0 ? spend / ftds : 0,
+      roi: spend > 0 ? (profit / spend) * 100 : 0
+    };
+  }, [filteredEntries]);
+
+  function exportCsv(rows: DailySpend[], filename: string) {
+    const header = [
+      'date',
+      'account',
+      'agency',
+      'buyer',
+      'geo',
+      'offer',
+      'spend',
+      'leads',
+      'ftds',
+      'revenue',
+      'notes'
+    ];
+
+    const body = rows.map((entry) => [
+      entry.date,
+      getAccountName(entry.ad_account_id),
+      getAgencyName(entry.agency_id),
+      getBuyerName(entry.buyer_id),
+      entry.geo,
+      getOfferName(entry.offer_id),
+      entry.spend,
+      entry.leads,
+      entry.ftds,
+      entry.revenue,
+      entry.notes || ''
+    ]);
+
+    const csv = [header, ...body]
+      .map((row) => row.map(csvEscape).join(','))
+      .join('\n');
+
+    downloadFile(filename, csv);
+  }
+
+  function downloadTemplate() {
+    const header = 'date,account,offer,spend,leads,ftds,revenue,notes';
+    const sample = `${today},Example Account,Example Offer,100,10,1,250,Imported from CSV`;
+    downloadFile('daily-spend-import-template.csv', `${header}\n${sample}`);
+  }
+
+  async function handleCsvImport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const text = await file.text();
+    const rows = parseCsv(text);
+    const [header, ...body] = rows;
+
+    if (!header) {
+      setMessage('CSV file is empty.');
+      return;
+    }
+
+    const index = (name: string) => header.findIndex((cell) => cell.toLowerCase() === name.toLowerCase());
+    const dateIndex = index('date');
+    const accountIndex = index('account');
+    const offerIndex = index('offer');
+    const spendIndex = index('spend');
+    const leadsIndex = index('leads');
+    const ftdsIndex = index('ftds');
+    const revenueIndex = index('revenue');
+    const notesIndex = index('notes');
+
+    if (dateIndex === -1 || accountIndex === -1 || offerIndex === -1) {
+      setMessage('CSV must include date, account and offer columns.');
+      event.target.value = '';
+      return;
+    }
+
+    const payload = body
+      .map((row) => {
+        const accountName = row[accountIndex];
+        const offerName = row[offerIndex];
+        const account = accounts.find((item) => item.account_name.toLowerCase() === accountName.toLowerCase());
+        const offer = offers.find((item) => item.name.toLowerCase() === offerName.toLowerCase());
+
+        if (!account || !offer) return null;
+
+        return {
+          date: row[dateIndex],
+          ad_account_id: account.id,
+          agency_id: account.agency_id,
+          buyer_id: account.buyer_id,
+          offer_id: offer.id,
+          geo: account.geo || offer.geo,
+          spend: Number(row[spendIndex] || 0),
+          leads: Number(row[leadsIndex] || 0),
+          ftds: Number(row[ftdsIndex] || 0),
+          revenue: Number(row[revenueIndex] || 0),
+          notes: notesIndex > -1 ? row[notesIndex] || null : null
+        };
+      })
+      .filter(Boolean);
+
+    if (payload.length === 0) {
+      setMessage('No valid rows imported. Make sure account and offer names match existing CRM records.');
+      event.target.value = '';
+      return;
+    }
+
+    const { error } = await supabase.from('daily_spend').insert(payload);
+
+    if (error) {
+      setMessage(`CSV import failed: ${error.message}`);
+      event.target.value = '';
+      return;
+    }
+
+    setMessage(`Imported ${payload.length} daily spend rows.`);
+    event.target.value = '';
+    await loadData();
+  }
+
+  function handleSort(key: SortKey) {
+    if (sortKey === key) {
       setSortDirection((current) => (current === 'asc' ? 'desc' : 'asc'));
       return;
     }
 
-    setSortKey(nextKey);
-    setSortDirection(nextKey === 'date' ? 'desc' : 'asc');
+    setSortKey(key);
+    setSortDirection(key === 'date' ? 'desc' : 'asc');
   }
 
-  function setLastDays(days: number) {
-    const date = new Date();
-    date.setDate(date.getDate() - (days - 1));
-    setStartDate(date.toISOString().slice(0, 10));
-    setEndDate(today);
-  }
-
-  const filteredRows = useMemo<SpendRowWithIndex[]>(() => {
-    return database.dailySpend
-      .map((row, originalIndex) => ({
-        ...row,
-        originalIndex,
-        cpl: row.leads ? row.spend / row.leads : 0,
-        profit: row.revenue - row.spend
-      }))
-      .filter((row) => {
-        if (startDate && row.date < startDate) return false;
-        if (endDate && row.date > endDate) return false;
-        return true;
-      })
-      .sort((a, b) => {
-        const valueA = sortValue(a, sortKey);
-        const valueB = sortValue(b, sortKey);
-
-        if (typeof valueA === 'number' && typeof valueB === 'number') {
-          return sortDirection === 'asc' ? valueA - valueB : valueB - valueA;
-        }
-
-        const comparison = String(valueA).localeCompare(String(valueB));
-        return sortDirection === 'asc' ? comparison : -comparison;
-      });
-  }, [database.dailySpend, startDate, endDate, sortKey, sortDirection]);
-
-  const filteredTotals = totals(filteredRows);
-
-  function exportFilteredCsv() {
-    const rows = filteredRows.map(({ originalIndex, cpl, profit, ...row }) => row);
-    downloadTextFile(`daily-spend-${startDate || 'all'}-to-${endDate || 'all'}.csv`, rowsToCsv(rows));
-  }
-
-  function exportAllCsv() {
-    downloadTextFile(`daily-spend-all-${today}.csv`, rowsToCsv(database.dailySpend));
-  }
-
-  function downloadTemplate() {
-    const template = [
-      csvHeaders.join(','),
-      '2026-07-08,Marco,Agency A,FB-BR-221,Brazil,Brazil WBS,500,40,3,900,Profitable'
-    ].join('\n');
-
-    downloadTextFile('daily-spend-import-template.csv', template);
-  }
-
-  function handleCsvImport(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-
-    reader.onload = () => {
-      try {
-        const rows = parseSpendCsv(String(reader.result || ''));
-
-        if (!rows.length) {
-          setImportMessage('No rows found in the CSV file.');
-          return;
-        }
-
-        importDailySpend(rows);
-        setImportMessage(`Imported ${rows.length} daily spend rows.`);
-      } catch {
-        setImportMessage('Could not import CSV. Please check the format and try again.');
-      } finally {
-        if (importInputRef.current) importInputRef.current.value = '';
-        setTimeout(() => setImportMessage(''), 4000);
-      }
-    };
-
-    reader.readAsText(file);
+  function sortLabel(key: SortKey, label: string) {
+    return `${label}${sortKey === key ? (sortDirection === 'asc' ? ' ↑' : ' ↓') : ''}`;
   }
 
   return (
     <>
-      <PageTitle title="Daily Spend" subtitle="Select an account and the CRM will auto-fill the agency, buyer and geo. Then filter, sort, export or import spend data." />
+      <PageTitle
+        title="Daily Spend"
+        subtitle="Track daily media buying spend, leads, FTDs, revenue and CPL. This page is now connected to Supabase."
+      />
 
-      <div className="card" style={{ marginBottom: 18 }}>
-        <h2>New Spend Entry</h2>
+      <div className="grid grid-2">
+        <div className="card">
+          <h2>{editingId ? 'Edit Spend Entry' : 'Add Spend Entry'}</h2>
 
-        <form className="form" onSubmit={handleSubmit}>
           <label>
             Date
-            <input value={form.date} onChange={(e) => updateField('date', e.target.value)} type="date" required />
+            <input type="date" value={form.date} onChange={(e) => updateField('date', e.target.value)} />
           </label>
 
           <label>
             Ad Account
-            <select value={form.account} onChange={(e) => selectAccount(e.target.value)} required>
+            <select value={form.ad_account_id} onChange={(e) => handleAccountChange(e.target.value)}>
               <option value="">Select account</option>
-              {database.accounts.map((account, index) => (
-                <option key={`${account.name}-${index}`} value={account.name}>
-                  {account.name} · {account.geo} · {account.buyer}
-                </option>
+              {accounts.map((account) => (
+                <option key={account.id} value={account.id}>{account.account_name}</option>
               ))}
             </select>
           </label>
 
-          <label>
-            Agency
-            <input list="daily-spend-agency-list" value={form.agency} onChange={(e) => updateField('agency', e.target.value)} placeholder="Auto-filled from account" required />
-            <datalist id="daily-spend-agency-list">{savedAgencies.map((agency) => <option key={agency} value={agency} />)}</datalist>
-          </label>
+          <div className="grid grid-2" style={{ marginTop: 14 }}>
+            <label>
+              Agency
+              <select value={form.agency_id} onChange={(e) => updateField('agency_id', e.target.value)}>
+                <option value="">No agency</option>
+                {agencies.map((agency) => (
+                  <option key={agency.id} value={agency.id}>{agency.name}</option>
+                ))}
+              </select>
+            </label>
 
-          <label>
-            Buyer
-            <input list="daily-spend-buyer-list" value={form.buyer} onChange={(e) => updateField('buyer', e.target.value)} placeholder="Auto-filled from account" required />
-            <datalist id="daily-spend-buyer-list">{savedBuyers.map((buyer) => <option key={buyer} value={buyer} />)}</datalist>
-          </label>
+            <label>
+              Buyer
+              <select value={form.buyer_id} onChange={(e) => updateField('buyer_id', e.target.value)}>
+                <option value="">No buyer</option>
+                {buyers.map((buyer) => (
+                  <option key={buyer.id} value={buyer.id}>{buyer.name}</option>
+                ))}
+              </select>
+            </label>
+          </div>
 
           <label>
             Geo
-            <input list="daily-spend-geo-list" value={form.geo} onChange={(e) => updateField('geo', e.target.value)} placeholder="Auto-filled from account" required />
-            <datalist id="daily-spend-geo-list">{savedGeos.map((geo) => <option key={geo} value={geo} />)}</datalist>
+            <input value={form.geo} onChange={(e) => updateField('geo', e.target.value)} placeholder="Brazil" />
           </label>
 
           <label>
             Offer
-            <select value={form.offer} onChange={(e) => updateField('offer', e.target.value)} required>
+            <select value={form.offer_id} onChange={(e) => updateField('offer_id', e.target.value)}>
               <option value="">Select offer</option>
-              {availableOffers.map((offer, index) => (
-                <option key={`${offer.name}-${index}`} value={offer.name}>
-                  {offer.name} · {offer.geo}
-                </option>
+              {visibleOffers.map((offer) => (
+                <option key={offer.id} value={offer.id}>{offer.name} — {offer.geo}</option>
               ))}
             </select>
           </label>
 
-          <label>Spend<input value={form.spend} onChange={(e) => updateField('spend', e.target.value)} type="number" min="0" step="0.01" placeholder="500" required /></label>
-          <label>Leads<input value={form.leads} onChange={(e) => updateField('leads', e.target.value)} type="number" min="0" step="1" placeholder="40" required /></label>
-          <label>FTDs<input value={form.ftds} onChange={(e) => updateField('ftds', e.target.value)} type="number" min="0" step="1" placeholder="3" required /></label>
-          <label>Revenue<input value={form.revenue} onChange={(e) => updateField('revenue', e.target.value)} type="number" min="0" step="0.01" placeholder="900" required /></label>
-
-          <div className="actions" style={{ alignSelf: 'end' }}>
-            <button className="btn" type="submit">Save Entry</button>
+          <div className="grid grid-2" style={{ marginTop: 14 }}>
+            <label>
+              Spend
+              <input type="number" value={form.spend} onChange={(e) => updateField('spend', e.target.value)} />
+            </label>
+            <label>
+              Leads
+              <input type="number" value={form.leads} onChange={(e) => updateField('leads', e.target.value)} />
+            </label>
+            <label>
+              FTDs / Sales
+              <input type="number" value={form.ftds} onChange={(e) => updateField('ftds', e.target.value)} />
+            </label>
+            <label>
+              Revenue
+              <input type="number" value={form.revenue} onChange={(e) => updateField('revenue', e.target.value)} />
+            </label>
           </div>
-        </form>
 
-        {selectedAccount && (
-          <p className="muted" style={{ marginTop: 12 }}>
-            Selected account: <strong>{selectedAccount.name}</strong> from <strong>{selectedAccount.agency}</strong>, handled by <strong>{selectedAccount.buyer}</strong> for <strong>{selectedAccount.geo}</strong>.
-          </p>
-        )}
+          <label>
+            Notes
+            <textarea value={form.notes} onChange={(e) => updateField('notes', e.target.value)} rows={4} />
+          </label>
 
-        {saved && <p className="positive" style={{ marginTop: 12 }}>Spend entry saved.</p>}
-      </div>
+          <br />
 
-      <div className="card" style={{ marginBottom: 18 }}>
-        <h2>Import / Export Daily Spend</h2>
-        <p className="muted">Export the current filtered view or import spend rows from a CSV file.</p>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            <button className="btn" type="button" onClick={saveEntry} disabled={saving}>
+              {saving ? 'Saving...' : editingId ? 'Update Entry' : 'Add Entry'}
+            </button>
+            {editingId && <button className="btn secondary" type="button" onClick={resetForm}>Cancel Edit</button>}
+          </div>
 
-        <div className="actions" style={{ flexWrap: 'wrap' }}>
-          <button className="btn" type="button" onClick={exportFilteredCsv}>Export Filtered CSV</button>
-          <button className="btn secondary" type="button" onClick={exportAllCsv}>Export All CSV</button>
-          <button className="btn secondary" type="button" onClick={downloadTemplate}>Download Import Template</button>
-          <button className="btn secondary" type="button" onClick={() => importInputRef.current?.click()}>Import CSV</button>
-          <input ref={importInputRef} type="file" accept=".csv,text/csv" onChange={handleCsvImport} style={{ display: 'none' }} />
+          {message && <p className="muted" style={{ marginTop: 12 }}>{message}</p>}
         </div>
 
-        {importMessage && <p className="positive" style={{ marginTop: 12 }}>{importMessage}</p>}
+        <div className="card">
+          <h2>Filtered Totals</h2>
+          <div className="grid grid-2">
+            <div><p className="muted">Spend</p><h2>{money(totals.spend)}</h2></div>
+            <div><p className="muted">Leads</p><h2>{totals.leads}</h2></div>
+            <div><p className="muted">CPL</p><h2>{money(totals.cpl)}</h2></div>
+            <div><p className="muted">FTDs</p><h2>{totals.ftds}</h2></div>
+            <div><p className="muted">CPA</p><h2>{money(totals.cpa)}</h2></div>
+            <div><p className="muted">Revenue</p><h2>{money(totals.revenue)}</h2></div>
+            <div><p className="muted">Profit</p><h2 className={totals.profit >= 0 ? 'positive' : 'negative'}>{money(totals.profit)}</h2></div>
+            <div><p className="muted">ROI</p><h2>{pct(totals.roi)}</h2></div>
+          </div>
+        </div>
       </div>
 
-      <div className="card" style={{ marginBottom: 18 }}>
-        <h2>Date Range & Totals</h2>
+      <div className="card" style={{ marginTop: 18 }}>
+        <h2>Filters, Sorting and CSV</h2>
 
-        <div className="form">
+        <div className="filter-bar">
           <label>
             Start Date
-            <input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} />
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
           </label>
-
           <label>
             End Date
-            <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
           </label>
-
           <label>
             Sort By
-            <select value={sortKey} onChange={(event) => handleSort(event.target.value as SortKey)}>
+            <select value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
               <option value="date">Date</option>
-              <option value="buyer">Buyer</option>
-              <option value="agency">Agency</option>
               <option value="account">Account</option>
+              <option value="agency">Agency</option>
+              <option value="buyer">Buyer</option>
               <option value="geo">Geo</option>
               <option value="offer">Offer</option>
               <option value="spend">Spend</option>
               <option value="leads">Leads</option>
               <option value="cpl">CPL</option>
-              <option value="ftds">FTDs</option>
-              <option value="revenue">Revenue</option>
               <option value="profit">Profit</option>
-              <option value="status">Status</option>
+              <option value="roi">ROI</option>
             </select>
           </label>
-
           <label>
             Direction
-            <select value={sortDirection} onChange={(event) => setSortDirection(event.target.value as SortDirection)}>
-              <option value="desc">High to Low / Newest First</option>
-              <option value="asc">Low to High / Oldest First</option>
+            <select value={sortDirection} onChange={(e) => setSortDirection(e.target.value as SortDirection)}>
+              <option value="desc">Descending</option>
+              <option value="asc">Ascending</option>
             </select>
           </label>
         </div>
 
-        <div className="actions" style={{ marginTop: 14, flexWrap: 'wrap' }}>
-          <button className="btn secondary" type="button" onClick={() => { setStartDate(today); setEndDate(today); }}>Today</button>
-          <button className="btn secondary" type="button" onClick={() => setLastDays(7)}>Last 7 Days</button>
-          <button className="btn secondary" type="button" onClick={() => { setStartDate(monthStart); setEndDate(today); }}>This Month</button>
-          <button className="btn secondary" type="button" onClick={() => { setStartDate(''); setEndDate(''); }}>All Time</button>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <button className="btn small secondary" type="button" onClick={() => setQuickRange('today')}>Today</button>
+          <button className="btn small secondary" type="button" onClick={() => setQuickRange('yesterday')}>Yesterday</button>
+          <button className="btn small secondary" type="button" onClick={() => setQuickRange('last7')}>Last 7 Days</button>
+          <button className="btn small secondary" type="button" onClick={() => setQuickRange('month')}>This Month</button>
+          <button className="btn small secondary" type="button" onClick={() => setQuickRange('all')}>All Time</button>
+          <button className="btn small" type="button" onClick={() => exportCsv(filteredEntries, 'daily-spend-filtered.csv')}>Export Filtered CSV</button>
+          <button className="btn small" type="button" onClick={() => exportCsv(entries, 'daily-spend-all.csv')}>Export All CSV</button>
+          <button className="btn small secondary" type="button" onClick={downloadTemplate}>Download Template</button>
+          <label className="btn small secondary" style={{ marginTop: 0 }}>
+            Import CSV
+            <input type="file" accept=".csv" onChange={handleCsvImport} style={{ display: 'none' }} />
+          </label>
         </div>
-
-        <section className="grid grid-4" style={{ marginTop: 18 }}>
-          <div><div className="metric-label">Filtered Spend</div><div className="metric-value">{money(filteredTotals.spend)}</div></div>
-          <div><div className="metric-label">Filtered Leads</div><div className="metric-value">{filteredTotals.leads}</div><div className="metric-sub">CPL {money(filteredTotals.cpl)}</div></div>
-          <div><div className="metric-label">Filtered FTDs</div><div className="metric-value">{filteredTotals.ftds}</div><div className="metric-sub">CPA {money(filteredTotals.cpa)}</div></div>
-          <div><div className="metric-label">Filtered Profit / ROI</div><div className="metric-value">{money(filteredTotals.profit)}</div><div className="metric-sub">{pct(filteredTotals.roi)}</div></div>
-        </section>
       </div>
 
-      <div className="card table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th><SortButton label="Date" sortKey="date" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="Buyer" sortKey="buyer" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="Agency" sortKey="agency" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="Account" sortKey="account" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="Geo" sortKey="geo" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="Offer" sortKey="offer" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="Spend" sortKey="spend" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="Leads" sortKey="leads" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="CPL" sortKey="cpl" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="FTDs" sortKey="ftds" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="Revenue" sortKey="revenue" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="Profit" sortKey="profit" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th><SortButton label="Status" sortKey="status" activeKey={sortKey} direction={sortDirection} onSort={handleSort} /></th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredRows.map((r) => (
-              <tr key={`${r.date}-${r.account}-${r.offer}-${r.originalIndex}`}>
-                <td>{r.date}</td>
-                <td>{r.buyer}</td>
-                <td>{r.agency}</td>
-                <td>{r.account}</td>
-                <td>{r.geo}</td>
-                <td>{r.offer}</td>
-                <td>{money(r.spend)}</td>
-                <td>{r.leads}</td>
-                <td>{money(r.cpl)}</td>
-                <td>{r.ftds}</td>
-                <td>{money(r.revenue)}</td>
-                <td className={r.profit >= 0 ? 'positive' : 'negative'}>{money(r.profit)}</td>
-                <td><span className={`badge ${statusClass(r.status)}`}>{r.status}</span></td>
-                <td><button className="btn secondary" type="button" onClick={() => deleteDailySpend(r.originalIndex)}>Delete</button></td>
-              </tr>
-            ))}
+      <div className="card table-wrap" style={{ marginTop: 18 }}>
+        <h2>Daily Spend Entries</h2>
 
-            {filteredRows.length === 0 && (
+        {loading ? (
+          <p className="muted">Loading daily spend from Supabase...</p>
+        ) : (
+          <table>
+            <thead>
               <tr>
-                <td colSpan={14} className="muted">No spend entries found for this date range.</td>
+                <th onClick={() => handleSort('date')}>{sortLabel('date', 'Date')}</th>
+                <th onClick={() => handleSort('account')}>{sortLabel('account', 'Account')}</th>
+                <th onClick={() => handleSort('agency')}>{sortLabel('agency', 'Agency')}</th>
+                <th onClick={() => handleSort('buyer')}>{sortLabel('buyer', 'Buyer')}</th>
+                <th onClick={() => handleSort('geo')}>{sortLabel('geo', 'Geo')}</th>
+                <th onClick={() => handleSort('offer')}>{sortLabel('offer', 'Offer')}</th>
+                <th onClick={() => handleSort('spend')}>{sortLabel('spend', 'Spend')}</th>
+                <th onClick={() => handleSort('leads')}>{sortLabel('leads', 'Leads')}</th>
+                <th onClick={() => handleSort('cpl')}>{sortLabel('cpl', 'CPL')}</th>
+                <th onClick={() => handleSort('ftds')}>{sortLabel('ftds', 'FTDs')}</th>
+                <th onClick={() => handleSort('cpa')}>{sortLabel('cpa', 'CPA')}</th>
+                <th onClick={() => handleSort('revenue')}>{sortLabel('revenue', 'Revenue')}</th>
+                <th onClick={() => handleSort('profit')}>{sortLabel('profit', 'Profit')}</th>
+                <th onClick={() => handleSort('roi')}>{sortLabel('roi', 'ROI')}</th>
+                <th>Actions</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filteredEntries.length === 0 ? (
+                <tr><td colSpan={15}>No daily spend entries for this date range.</td></tr>
+              ) : (
+                filteredEntries.map((entry) => {
+                  const cpl = entry.leads > 0 ? entry.spend / entry.leads : 0;
+                  const cpa = entry.ftds > 0 ? entry.spend / entry.ftds : 0;
+                  const profit = entry.revenue - entry.spend;
+                  const roi = entry.spend > 0 ? (profit / entry.spend) * 100 : 0;
+
+                  return (
+                    <tr key={entry.id}>
+                      <td>{entry.date}</td>
+                      <td>{getAccountName(entry.ad_account_id)}</td>
+                      <td>{getAgencyName(entry.agency_id)}</td>
+                      <td>{getBuyerName(entry.buyer_id)}</td>
+                      <td>{entry.geo}</td>
+                      <td>{getOfferName(entry.offer_id)}</td>
+                      <td>{money(entry.spend)}</td>
+                      <td>{entry.leads}</td>
+                      <td>{money(cpl)}</td>
+                      <td>{entry.ftds}</td>
+                      <td>{money(cpa)}</td>
+                      <td>{money(entry.revenue)}</td>
+                      <td className={profit >= 0 ? 'positive' : 'negative'}>{money(profit)}</td>
+                      <td>{pct(roi)}</td>
+                      <td>
+                        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                          <button className="btn small" type="button" onClick={() => editEntry(entry)}>Edit</button>
+                          <button className="btn small danger" type="button" onClick={() => deleteEntry(entry.id)}>Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
     </>
   );
