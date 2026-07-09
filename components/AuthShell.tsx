@@ -10,6 +10,7 @@ const nav = [
   ['Dashboard', '/dashboard'],
   ['Daily Spend', '/daily-spend'],
   ['Top Up Requests', '/top-up-requests'],
+  ['Creatives', '/creatives'],
   ['Accounts', '/accounts'],
   ['Agencies', '/agencies'],
   ['Offers', '/offers'],
