@@ -21,6 +21,13 @@ type AdAccount = {
   geo: string | null;
 };
 
+type CreativeFolder = {
+  id: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+};
+
 type Creative = {
   id: string;
   name: string;
@@ -35,6 +42,7 @@ type Creative = {
   status: string | null;
   spend: number | null;
   leads: number | null;
+  folder_id: string | null;
   notes: string | null;
   created_at: string;
 };
@@ -50,6 +58,7 @@ type CreativeForm = {
   status: string;
   spend: string;
   leads: string;
+  folder_id: string;
   notes: string;
 };
 
@@ -64,6 +73,7 @@ const emptyForm: CreativeForm = {
   status: 'testing',
   spend: '0',
   leads: '0',
+  folder_id: '',
   notes: ''
 };
 
@@ -99,6 +109,7 @@ export default function CreativesPage() {
   const [buyers, setBuyers] = useState<Buyer[]>([]);
   const [offers, setOffers] = useState<Offer[]>([]);
   const [accounts, setAccounts] = useState<AdAccount[]>([]);
+  const [folders, setFolders] = useState<CreativeFolder[]>([]);
 
   const [form, setForm] = useState<CreativeForm>(emptyForm);
   const [files, setFiles] = useState<File[]>([]);
@@ -109,12 +120,17 @@ export default function CreativesPage() {
 
   const [statusFilter, setStatusFilter] = useState('all');
   const [platformFilter, setPlatformFilter] = useState('all');
+  const [folderFilter, setFolderFilter] = useState('all');
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [bulkStatus, setBulkStatus] = useState('');
   const [bulkPlatform, setBulkPlatform] = useState('');
   const [bulkGeo, setBulkGeo] = useState('');
   const [bulkAngle, setBulkAngle] = useState('');
+  const [bulkFolderId, setBulkFolderId] = useState('');
+
+  const [newFolderName, setNewFolderName] = useState('');
+  const [newFolderDescription, setNewFolderDescription] = useState('');
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -124,7 +140,7 @@ export default function CreativesPage() {
     setLoading(true);
     setMessage('');
 
-    const [creativesResult, buyersResult, offersResult, accountsResult] =
+    const [creativesResult, buyersResult, offersResult, accountsResult, foldersResult] =
       await Promise.all([
         supabase
           .from('creatives')
@@ -144,7 +160,12 @@ export default function CreativesPage() {
         supabase
           .from('ad_accounts')
           .select('id, account_name, geo')
-          .order('account_name', { ascending: true })
+          .order('account_name', { ascending: true }),
+
+        supabase
+          .from('creative_folders')
+          .select('id, name, description, color')
+          .order('created_at', { ascending: false })
       ]);
 
     if (creativesResult.error) {
@@ -153,8 +174,8 @@ export default function CreativesPage() {
       return;
     }
 
-    if (buyersResult.error || offersResult.error || accountsResult.error) {
-      setMessage('Failed to load buyers, offers or accounts.');
+    if (buyersResult.error || offersResult.error || accountsResult.error || foldersResult.error) {
+      setMessage('Failed to load buyers, offers, accounts or folders.');
       setLoading(false);
       return;
     }
@@ -163,6 +184,7 @@ export default function CreativesPage() {
     setBuyers((buyersResult.data || []) as Buyer[]);
     setOffers((offersResult.data || []) as Offer[]);
     setAccounts((accountsResult.data || []) as AdAccount[]);
+    setFolders((foldersResult.data || []) as CreativeFolder[]);
 
     setLoading(false);
   }
@@ -210,6 +232,10 @@ export default function CreativesPage() {
     return accounts.find((account) => account.id === id)?.account_name || '-';
   }
 
+  function getFolderName(id: string | null) {
+    return folders.find((folder) => folder.id === id)?.name || 'No folder';
+  }
+
   function resetForm() {
     setForm(emptyForm);
     setFiles([]);
@@ -235,6 +261,7 @@ export default function CreativesPage() {
       status: creative.status || 'testing',
       spend: String(creative.spend || 0),
       leads: String(creative.leads || 0),
+      folder_id: creative.folder_id || '',
       notes: creative.notes || ''
     });
 
@@ -321,6 +348,7 @@ export default function CreativesPage() {
           status: form.status || 'testing',
           spend: Number(form.spend || 0),
           leads: Number(form.leads || 0),
+          folder_id: form.folder_id || null,
           notes: form.notes.trim() || null
         };
 
@@ -356,6 +384,7 @@ export default function CreativesPage() {
             status: form.status || 'testing',
             spend: Number(form.spend || 0),
             leads: Number(form.leads || 0),
+            folder_id: form.folder_id || null,
             notes: form.notes.trim() || null
           });
         }
@@ -414,6 +443,30 @@ export default function CreativesPage() {
     setSelectedIds([]);
   }
 
+  async function createFolder() {
+    if (!newFolderName.trim()) {
+      setMessage('Folder name is required.');
+      return;
+    }
+
+    const { error } = await supabase
+      .from('creative_folders')
+      .insert({
+        name: newFolderName.trim(),
+        description: newFolderDescription.trim() || null
+      });
+
+    if (error) {
+      setMessage(`Failed to create folder: ${error.message}`);
+      return;
+    }
+
+    setMessage('Folder created successfully.');
+    setNewFolderName('');
+    setNewFolderDescription('');
+    await loadData();
+  }
+
   async function bulkUpdateCreatives() {
     if (selectedIds.length === 0) {
       setMessage('Select at least one creative first.');
@@ -425,12 +478,14 @@ export default function CreativesPage() {
       platform?: string;
       geo?: string | null;
       angle?: string | null;
+      folder_id?: string | null;
     } = {};
 
     if (bulkStatus) payload.status = bulkStatus;
     if (bulkPlatform) payload.platform = bulkPlatform;
     if (bulkGeo.trim()) payload.geo = bulkGeo.trim();
     if (bulkAngle.trim()) payload.angle = bulkAngle.trim();
+    if (bulkFolderId) payload.folder_id = bulkFolderId === 'none' ? null : bulkFolderId;
 
     if (Object.keys(payload).length === 0) {
       setMessage('Choose at least one bulk edit field.');
@@ -453,6 +508,7 @@ export default function CreativesPage() {
     setBulkPlatform('');
     setBulkGeo('');
     setBulkAngle('');
+    setBulkFolderId('');
     await loadData();
   }
 
@@ -530,9 +586,14 @@ export default function CreativesPage() {
       const matchesPlatform =
         platformFilter === 'all' || creative.platform === platformFilter;
 
-      return matchesStatus && matchesPlatform;
+      const matchesFolder =
+        folderFilter === 'all' ||
+        (folderFilter === 'none' && !creative.folder_id) ||
+        creative.folder_id === folderFilter;
+
+      return matchesStatus && matchesPlatform && matchesFolder;
     });
-  }, [creatives, statusFilter, platformFilter]);
+  }, [creatives, statusFilter, platformFilter, folderFilter]);
 
   const totals = useMemo(() => {
     const spend = creatives.reduce((sum, item) => sum + Number(item.spend || 0), 0);
@@ -553,7 +614,7 @@ export default function CreativesPage() {
     <>
       <PageTitle
         title="Creatives"
-        subtitle="Upload creative images, track angles, status, spend, leads and CPL."
+        subtitle="Upload creative images, organize folders, track angles, status, spend, leads and CPL."
       />
 
       <section className="grid grid-4" style={{ marginBottom: 18 }}>
@@ -585,6 +646,26 @@ export default function CreativesPage() {
       <div className="grid grid-2">
         <div className="card">
           <h2>{editingId ? 'Edit Creative' : 'Upload Creative'}</h2>
+
+          <div className="folder-create-box">
+            <strong>Create Folder</strong>
+
+            <input
+              value={newFolderName}
+              onChange={(e) => setNewFolderName(e.target.value)}
+              placeholder="Folder name, e.g. Bangladesh Lucky Wheel"
+            />
+
+            <input
+              value={newFolderDescription}
+              onChange={(e) => setNewFolderDescription(e.target.value)}
+              placeholder="Optional description"
+            />
+
+            <button className="btn small secondary" type="button" onClick={createFolder}>
+              Create Folder
+            </button>
+          </div>
 
           <label>
             Creative Name
@@ -745,6 +826,21 @@ export default function CreativesPage() {
             </label>
           </div>
 
+          <label>
+            Folder
+            <select
+              value={form.folder_id}
+              onChange={(e) => updateField('folder_id', e.target.value)}
+            >
+              <option value="">No folder</option>
+              {folders.map((folder) => (
+                <option key={folder.id} value={folder.id}>
+                  {folder.name}
+                </option>
+              ))}
+            </select>
+          </label>
+
           <div className="grid grid-2" style={{ marginTop: 14 }}>
             <label>
               Spend
@@ -873,6 +969,22 @@ export default function CreativesPage() {
                   placeholder="UGC / bonus / wheel"
                 />
               </label>
+
+              <label>
+                Bulk Folder
+                <select
+                  value={bulkFolderId}
+                  onChange={(e) => setBulkFolderId(e.target.value)}
+                >
+                  <option value="">No change</option>
+                  <option value="none">Remove folder</option>
+                  {folders.map((folder) => (
+                    <option key={folder.id} value={folder.id}>
+                      {folder.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
 
             <button className="btn small" type="button" onClick={bulkUpdateCreatives}>
@@ -880,7 +992,7 @@ export default function CreativesPage() {
             </button>
           </div>
 
-          <div className="grid grid-2" style={{ marginBottom: 14 }}>
+          <div className="grid grid-3" style={{ marginBottom: 14 }}>
             <label>
               Status Filter
               <select
@@ -909,6 +1021,22 @@ export default function CreativesPage() {
                 <option value="google">Google</option>
                 <option value="native">Native</option>
                 <option value="push">Push</option>
+              </select>
+            </label>
+
+            <label>
+              Folder Filter
+              <select
+                value={folderFilter}
+                onChange={(e) => setFolderFilter(e.target.value)}
+              >
+                <option value="all">All folders</option>
+                <option value="none">No folder</option>
+                {folders.map((folder) => (
+                  <option key={folder.id} value={folder.id}>
+                    {folder.name}
+                  </option>
+                ))}
               </select>
             </label>
           </div>
@@ -948,6 +1076,8 @@ export default function CreativesPage() {
 
                       <p className="muted">
                         {creative.platform || 'facebook'} · {creative.geo || '-'} · {creative.angle || '-'}
+                        <br />
+                        Folder: {getFolderName(creative.folder_id)}
                       </p>
 
                       <div className="creative-stats">
