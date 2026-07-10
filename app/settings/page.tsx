@@ -11,9 +11,10 @@ type Buyer = {
 
 type BudgetPool = {
   id: string;
+  project_name: string | null;
   name: string;
   period: string;
-  total_budget: number;
+  total_budget: number | null;
   currency: string | null;
   warning_threshold_pct: number | null;
   status: string | null;
@@ -30,6 +31,7 @@ type BuyerAllocation = {
 };
 
 type PoolForm = {
+  project_name: string;
   name: string;
   period: string;
   total_budget: string;
@@ -42,9 +44,10 @@ type PoolForm = {
 const currentPeriod = new Date().toISOString().slice(0, 7);
 
 const emptyPoolForm: PoolForm = {
-  name: 'Main Media Buying Pool',
+  project_name: '',
+  name: '',
   period: currentPeriod,
-  total_budget: '25000',
+  total_budget: '0',
   currency: 'USD',
   warning_threshold_pct: '80',
   status: 'active',
@@ -84,7 +87,7 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
-  async function loadSettingsData() {
+  async function loadSettingsData(preferredPoolId?: string) {
     setLoading(true);
     setMessage('');
 
@@ -120,28 +123,33 @@ export default function SettingsPage() {
     setBudgetPools(loadedPools);
     setAllocations(loadedAllocations);
 
-    const selectedPool = loadedPools[0];
+    const poolToSelect =
+      loadedPools.find((pool) => pool.id === preferredPoolId) ||
+      loadedPools.find((pool) => pool.id === selectedPoolId) ||
+      loadedPools[0];
 
-    if (selectedPool) {
-      setSelectedPoolId(selectedPool.id);
+    if (poolToSelect) {
+      setSelectedPoolId(poolToSelect.id);
+
       setPoolForm({
-        name: selectedPool.name || '',
-        period: selectedPool.period || currentPeriod,
-        total_budget: String(selectedPool.total_budget || 0),
-        currency: selectedPool.currency || 'USD',
-        warning_threshold_pct: String(selectedPool.warning_threshold_pct || 80),
-        status: selectedPool.status || 'active',
-        notes: selectedPool.notes || ''
+        project_name: poolToSelect.project_name || '',
+        name: poolToSelect.name || '',
+        period: poolToSelect.period || currentPeriod,
+        total_budget: String(poolToSelect.total_budget ?? 0),
+        currency: poolToSelect.currency || 'USD',
+        warning_threshold_pct: String(poolToSelect.warning_threshold_pct ?? 80),
+        status: poolToSelect.status || 'active',
+        notes: poolToSelect.notes || ''
       });
 
       const drafts: Record<string, string> = {};
 
       loadedBuyers.forEach((buyer) => {
         const allocation = loadedAllocations.find(
-          (item) => item.budget_pool_id === selectedPool.id && item.buyer_id === buyer.id
+          (item) => item.budget_pool_id === poolToSelect.id && item.buyer_id === buyer.id
         );
 
-        drafts[buyer.id] = String(allocation?.allocated_budget || 0);
+        drafts[buyer.id] = String(allocation?.allocated_budget ?? 0);
       });
 
       setAllocationDrafts(drafts);
@@ -150,9 +158,11 @@ export default function SettingsPage() {
       setPoolForm(emptyPoolForm);
 
       const drafts: Record<string, string> = {};
+
       loadedBuyers.forEach((buyer) => {
         drafts[buyer.id] = '0';
       });
+
       setAllocationDrafts(drafts);
     }
 
@@ -161,6 +171,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     loadSettingsData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function updatePoolField(field: keyof PoolForm, value: string) {
@@ -168,6 +179,24 @@ export default function SettingsPage() {
       ...current,
       [field]: value
     }));
+  }
+
+  function startNewPool() {
+    setSelectedPoolId('');
+
+    setPoolForm({
+      ...emptyPoolForm,
+      period: currentPeriod
+    });
+
+    const drafts: Record<string, string> = {};
+
+    buyers.forEach((buyer) => {
+      drafts[buyer.id] = '0';
+    });
+
+    setAllocationDrafts(drafts);
+    setMessage('Creating a new project pool.');
   }
 
   function handlePoolSelect(poolId: string) {
@@ -178,11 +207,12 @@ export default function SettingsPage() {
     if (!pool) return;
 
     setPoolForm({
+      project_name: pool.project_name || '',
       name: pool.name || '',
       period: pool.period || currentPeriod,
-      total_budget: String(pool.total_budget || 0),
+      total_budget: String(pool.total_budget ?? 0),
       currency: pool.currency || 'USD',
-      warning_threshold_pct: String(pool.warning_threshold_pct || 80),
+      warning_threshold_pct: String(pool.warning_threshold_pct ?? 80),
       status: pool.status || 'active',
       notes: pool.notes || ''
     });
@@ -194,10 +224,11 @@ export default function SettingsPage() {
         (item) => item.budget_pool_id === pool.id && item.buyer_id === buyer.id
       );
 
-      drafts[buyer.id] = String(allocation?.allocated_budget || 0);
+      drafts[buyer.id] = String(allocation?.allocated_budget ?? 0);
     });
 
     setAllocationDrafts(drafts);
+    setMessage('');
   }
 
   async function saveBudgetPool() {
@@ -215,11 +246,14 @@ export default function SettingsPage() {
     setMessage('');
 
     const payload = {
+      project_name: poolForm.project_name.trim() || null,
       name: poolForm.name.trim(),
       period: poolForm.period.trim(),
       total_budget: Number(poolForm.total_budget || 0),
       currency: poolForm.currency.trim() || 'USD',
-      warning_threshold_pct: Number(poolForm.warning_threshold_pct || 80),
+      warning_threshold_pct: poolForm.warning_threshold_pct.trim()
+        ? Number(poolForm.warning_threshold_pct)
+        : 80,
       status: poolForm.status || 'active',
       notes: poolForm.notes.trim() || null
     };
@@ -236,26 +270,28 @@ export default function SettingsPage() {
         return;
       }
 
+      setSaving(false);
       setMessage('Budget pool updated successfully.');
-    } else {
-      const { data, error } = await supabase
-        .from('budget_pools')
-        .insert(payload)
-        .select()
-        .single();
+      await loadSettingsData(selectedPoolId);
+      return;
+    }
 
-      if (error) {
-        setMessage(`Failed to create budget pool: ${error.message}`);
-        setSaving(false);
-        return;
-      }
+    const { data, error } = await supabase
+      .from('budget_pools')
+      .insert(payload)
+      .select()
+      .single();
 
-      setSelectedPoolId(data.id);
-      setMessage('Budget pool created successfully.');
+    if (error) {
+      setMessage(`Failed to create budget pool: ${error.message}`);
+      setSaving(false);
+      return;
     }
 
     setSaving(false);
-    await loadSettingsData();
+    setSelectedPoolId(data.id);
+    setMessage('Budget pool created successfully.');
+    await loadSettingsData(data.id);
   }
 
   async function saveAllocations() {
@@ -305,7 +341,7 @@ export default function SettingsPage() {
 
     setSaving(false);
     setMessage('Buyer allocations saved successfully.');
-    await loadSettingsData();
+    await loadSettingsData(selectedPoolId);
   }
 
   async function deleteBudgetPool() {
@@ -318,6 +354,11 @@ export default function SettingsPage() {
 
     if (!confirmed) return;
 
+    await supabase
+      .from('buyer_budget_allocations')
+      .delete()
+      .eq('budget_pool_id', selectedPoolId);
+
     const { error } = await supabase
       .from('budget_pools')
       .delete()
@@ -328,6 +369,7 @@ export default function SettingsPage() {
       return;
     }
 
+    setSelectedPoolId('');
     setMessage('Budget pool deleted successfully.');
     await loadSettingsData();
   }
@@ -439,11 +481,13 @@ export default function SettingsPage() {
   const poolTotal = Number(poolForm.total_budget || 0);
   const unallocated = poolTotal - totalAllocated;
 
+  const selectedPool = budgetPools.find((pool) => pool.id === selectedPoolId);
+
   return (
     <>
       <PageTitle
         title="Settings"
-        subtitle="Manage budget pools, buyer allocations, integrations and Supabase backups."
+        subtitle="Manage project budget pools, buyer allocations, integrations and Supabase backups."
       />
 
       {loading ? (
@@ -453,17 +497,29 @@ export default function SettingsPage() {
       ) : (
         <div className="grid grid-2">
           <div className="card">
-            <h2>Budget Pool</h2>
+            <h2>{selectedPoolId ? 'Edit Project Pool' : 'Create Project Pool'}</h2>
+
+            <button
+              className="btn small secondary"
+              type="button"
+              onClick={startNewPool}
+              style={{ marginBottom: 12 }}
+            >
+              New Project Pool
+            </button>
 
             {budgetPools.length > 0 && (
               <label>
-                Select Pool
+                Select Existing Pool
                 <select
                   value={selectedPoolId}
                   onChange={(e) => handlePoolSelect(e.target.value)}
                 >
+                  <option value="">Create new pool</option>
+
                   {budgetPools.map((pool) => (
                     <option key={pool.id} value={pool.id}>
+                      {pool.project_name ? `${pool.project_name} — ` : ''}
                       {pool.name} — {pool.period}
                     </option>
                   ))}
@@ -471,11 +527,37 @@ export default function SettingsPage() {
               </label>
             )}
 
+            {selectedPool && (
+              <p className="muted" style={{ marginTop: 10 }}>
+                Editing:{' '}
+                <strong>
+                  {selectedPool.project_name ? `${selectedPool.project_name} — ` : ''}
+                  {selectedPool.name}
+                </strong>
+              </p>
+            )}
+
+            {!selectedPoolId && (
+              <p className="muted" style={{ marginTop: 10 }}>
+                New pool mode is active. Saving will create a separate project pool.
+              </p>
+            )}
+
+            <label>
+              Project Name
+              <input
+                value={poolForm.project_name}
+                onChange={(e) => updatePoolField('project_name', e.target.value)}
+                placeholder="Zeydoo PH + BD / Internovus Brazil / Monstrack Brazil"
+              />
+            </label>
+
             <label>
               Pool Name
               <input
                 value={poolForm.name}
                 onChange={(e) => updatePoolField('name', e.target.value)}
+                placeholder="July Testing Pool"
               />
             </label>
 
@@ -533,6 +615,7 @@ export default function SettingsPage() {
                 value={poolForm.notes}
                 onChange={(e) => updatePoolField('notes', e.target.value)}
                 rows={4}
+                placeholder="Notes for this project pool..."
               />
             </label>
 
@@ -560,7 +643,11 @@ export default function SettingsPage() {
           <div className="card table-wrap">
             <h2>Buyer Budget Allocations</h2>
 
-            <div className="grid grid-3" style={{ marginBottom: 16 }}>
+            <p className="muted">
+              These allocations belong only to the selected project pool.
+            </p>
+
+            <div className="grid grid-3" style={{ marginBottom: 16, marginTop: 12 }}>
               <div>
                 <p className="muted">Pool Budget</p>
                 <h2>{money(poolTotal)}</h2>
