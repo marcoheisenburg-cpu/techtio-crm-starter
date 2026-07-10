@@ -17,7 +17,8 @@ const nav = [
   ['Offers', '/offers'],
   ['Buyers', '/buyers'],
   ['Reports', '/reports'],
-  ['Settings', '/settings']
+  ['Settings', '/settings'],
+  ['Spend Proofs', '/spend-proofs'],
 ];
 
 export function AuthShell({ children }: { children: React.ReactNode }) {
