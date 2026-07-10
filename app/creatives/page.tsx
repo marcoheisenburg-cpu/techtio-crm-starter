@@ -43,6 +43,11 @@ type Creative = {
   spend: number | null;
   leads: number | null;
   folder_id: string | null;
+  primary_text: string | null;
+  headline: string | null;
+  description: string | null;
+  cta: string | null;
+  hook: string | null;
   notes: string | null;
   created_at: string;
 };
@@ -59,6 +64,11 @@ type CreativeForm = {
   spend: string;
   leads: string;
   folder_id: string;
+  primary_text: string;
+  headline: string;
+  description: string;
+  cta: string;
+  hook: string;
   notes: string;
 };
 
@@ -74,6 +84,11 @@ const emptyForm: CreativeForm = {
   spend: '0',
   leads: '0',
   folder_id: '',
+  primary_text: '',
+  headline: '',
+  description: '',
+  cta: 'Learn More',
+  hook: '',
   notes: ''
 };
 
@@ -135,6 +150,7 @@ export default function CreativesPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
+  const [previewCreative, setPreviewCreative] = useState<Creative | null>(null);
 
   async function loadData() {
     setLoading(true);
@@ -262,6 +278,11 @@ export default function CreativesPage() {
       spend: String(creative.spend || 0),
       leads: String(creative.leads || 0),
       folder_id: creative.folder_id || '',
+      primary_text: creative.primary_text || '',
+      headline: creative.headline || '',
+      description: creative.description || '',
+      cta: creative.cta || 'Learn More',
+      hook: creative.hook || '',
       notes: creative.notes || ''
     });
 
@@ -349,6 +370,11 @@ export default function CreativesPage() {
           spend: Number(form.spend || 0),
           leads: Number(form.leads || 0),
           folder_id: form.folder_id || null,
+          primary_text: form.primary_text.trim() || null,
+          headline: form.headline.trim() || null,
+          description: form.description.trim() || null,
+          cta: form.cta.trim() || null,
+          hook: form.hook.trim() || null,
           notes: form.notes.trim() || null
         };
 
@@ -385,6 +411,11 @@ export default function CreativesPage() {
             spend: Number(form.spend || 0),
             leads: Number(form.leads || 0),
             folder_id: form.folder_id || null,
+            primary_text: form.primary_text.trim() || null,
+            headline: form.headline.trim() || null,
+            description: form.description.trim() || null,
+            cta: form.cta.trim() || null,
+            hook: form.hook.trim() || null,
             notes: form.notes.trim() || null
           });
         }
@@ -614,7 +645,7 @@ export default function CreativesPage() {
     <>
       <PageTitle
         title="Creatives"
-        subtitle="Upload creative images, organize folders, track angles, status, spend, leads and CPL."
+        subtitle="Upload creative images, organize folders, track ad copy, angles, status, spend, leads and CPL."
       />
 
       <section className="grid grid-4" style={{ marginBottom: 18 }}>
@@ -705,9 +736,29 @@ export default function CreativesPage() {
           </label>
 
           {files.length > 0 && (
-            <p className="muted" style={{ marginTop: 10 }}>
-              {files.length} image{files.length === 1 ? '' : 's'} selected.
-            </p>
+            <div style={{ marginTop: 12 }}>
+              <p className="muted">
+                {files.length} image{files.length === 1 ? '' : 's'} selected.
+              </p>
+
+              <div className="selected-preview-grid">
+                {files.slice(0, 12).map((selectedFile, index) => (
+                  <div className="selected-preview-card" key={`${selectedFile.name}-${index}`}>
+                    <img
+                      src={URL.createObjectURL(selectedFile)}
+                      alt={selectedFile.name}
+                    />
+                    <span>{selectedFile.name}</span>
+                  </div>
+                ))}
+              </div>
+
+              {files.length > 12 && (
+                <p className="muted" style={{ marginTop: 8 }}>
+                  Showing first 12 previews. {files.length - 12} more selected.
+                </p>
+              )}
+            </div>
           )}
 
           {editingImageUrl && files.length === 0 && (
@@ -862,12 +913,67 @@ export default function CreativesPage() {
           </div>
 
           <label>
+            Hook
+            <input
+              value={form.hook}
+              onChange={(e) => updateField('hook', e.target.value)}
+              placeholder="Main angle/hook, e.g. Spin & win, premium casino, shocking news..."
+            />
+          </label>
+
+          <label>
+            Primary Text
+            <textarea
+              value={form.primary_text}
+              onChange={(e) => updateField('primary_text', e.target.value)}
+              rows={3}
+              placeholder="Main Meta/Facebook primary text..."
+            />
+          </label>
+
+          <div className="grid grid-2" style={{ marginTop: 14 }}>
+            <label>
+              Headline
+              <input
+                value={form.headline}
+                onChange={(e) => updateField('headline', e.target.value)}
+                placeholder="Ad headline"
+              />
+            </label>
+
+            <label>
+              CTA
+              <select
+                value={form.cta}
+                onChange={(e) => updateField('cta', e.target.value)}
+              >
+                <option value="Learn More">Learn More</option>
+                <option value="Sign Up">Sign Up</option>
+                <option value="Apply Now">Apply Now</option>
+                <option value="Shop Now">Shop Now</option>
+                <option value="Play Now">Play Now</option>
+                <option value="Claim Now">Claim Now</option>
+                <option value="Get Offer">Get Offer</option>
+              </select>
+            </label>
+          </div>
+
+          <label>
+            Description
+            <input
+              value={form.description}
+              onChange={(e) => updateField('description', e.target.value)}
+              placeholder="Short ad description"
+            />
+          </label>
+
+          <label>
             Notes
             <textarea
               value={form.notes}
               onChange={(e) => updateField('notes', e.target.value)}
               rows={4}
-              placeholder="Hook, ad copy, result notes, reason why it worked or failed..."
+              placeholder="Result notes, reason why it worked or failed..."
             />
           </label>
 
@@ -1064,7 +1170,13 @@ export default function CreativesPage() {
                       </label>
                     </div>
 
-                    <img src={creative.image_url} alt={creative.name} />
+                    <button
+                      className="creative-image-button"
+                      type="button"
+                      onClick={() => setPreviewCreative(creative)}
+                    >
+                      <img src={creative.image_url} alt={creative.name} />
+                    </button>
 
                     <div className="creative-card-body">
                       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
@@ -1079,6 +1191,19 @@ export default function CreativesPage() {
                         <br />
                         Folder: {getFolderName(creative.folder_id)}
                       </p>
+
+                      {creative.headline && (
+                        <p className="creative-copy-preview">
+                          <strong>{creative.headline}</strong>
+                          {creative.primary_text && (
+                            <>
+                              <br />
+                              {creative.primary_text.slice(0, 90)}
+                              {creative.primary_text.length > 90 ? '...' : ''}
+                            </>
+                          )}
+                        </p>
+                      )}
 
                       <div className="creative-stats">
                         <span>Spend: {money(creative.spend)}</span>
@@ -1143,6 +1268,155 @@ export default function CreativesPage() {
           )}
         </div>
       </div>
+
+      {previewCreative && (
+        <div className="creative-modal-backdrop" onClick={() => setPreviewCreative(null)}>
+          <div className="creative-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="creative-modal-header">
+              <div>
+                <h2>{previewCreative.name}</h2>
+                <p className="muted">
+                  {previewCreative.platform || 'facebook'} · {previewCreative.geo || '-'} · Folder: {getFolderName(previewCreative.folder_id)}
+                </p>
+              </div>
+
+              <button
+                className="btn small secondary"
+                type="button"
+                onClick={() => setPreviewCreative(null)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="creative-modal-grid">
+              <div>
+                <img
+                  className="creative-modal-image"
+                  src={previewCreative.image_url}
+                  alt={previewCreative.name}
+                />
+
+                <div className="creative-modal-actions">
+                  <button
+                    className="btn small secondary"
+                    type="button"
+                    onClick={() => navigator.clipboard.writeText(previewCreative.image_url)}
+                  >
+                    Copy Image URL
+                  </button>
+
+                  <a
+                    className="btn small"
+                    href={previewCreative.image_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open Image
+                  </a>
+
+                  <button
+                    className="btn small"
+                    type="button"
+                    onClick={() => {
+                      editCreative(previewCreative);
+                      setPreviewCreative(null);
+                    }}
+                  >
+                    Edit
+                  </button>
+
+                  <button
+                    className="btn small danger"
+                    type="button"
+                    onClick={() => {
+                      setPreviewCreative(null);
+                      deleteCreative(previewCreative);
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+
+              <div className="creative-modal-details">
+                <div className="creative-detail-box">
+                  <span>Status</span>
+                  <strong>{previewCreative.status || 'testing'}</strong>
+                </div>
+
+                <div className="creative-detail-box">
+                  <span>Angle</span>
+                  <strong>{previewCreative.angle || '-'}</strong>
+                </div>
+
+                <div className="creative-detail-box">
+                  <span>Spend</span>
+                  <strong>{money(previewCreative.spend)}</strong>
+                </div>
+
+                <div className="creative-detail-box">
+                  <span>Leads / CPL</span>
+                  <strong>{previewCreative.leads || 0} / {getCpl(previewCreative.spend, previewCreative.leads)}</strong>
+                </div>
+
+                <div className="creative-ad-copy">
+                  <h3>Ad Copy</h3>
+
+                  <p>
+                    <span>Hook</span>
+                    {previewCreative.hook || '-'}
+                  </p>
+
+                  <p>
+                    <span>Primary Text</span>
+                    {previewCreative.primary_text || '-'}
+                  </p>
+
+                  <p>
+                    <span>Headline</span>
+                    {previewCreative.headline || '-'}
+                  </p>
+
+                  <p>
+                    <span>Description</span>
+                    {previewCreative.description || '-'}
+                  </p>
+
+                  <p>
+                    <span>CTA</span>
+                    {previewCreative.cta || '-'}
+                  </p>
+                </div>
+
+                <div className="creative-ad-copy">
+                  <h3>Linked Data</h3>
+
+                  <p>
+                    <span>Buyer</span>
+                    {getBuyerName(previewCreative.buyer_id)}
+                  </p>
+
+                  <p>
+                    <span>Offer</span>
+                    {getOfferName(previewCreative.offer_id)}
+                  </p>
+
+                  <p>
+                    <span>Account</span>
+                    {getAccountName(previewCreative.ad_account_id)}
+                  </p>
+
+                  <p>
+                    <span>Notes</span>
+                    {previewCreative.notes || '-'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

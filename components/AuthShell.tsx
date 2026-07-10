@@ -11,6 +11,7 @@ const nav = [
   ['Daily Spend', '/daily-spend'],
   ['Top Up Requests', '/top-up-requests'],
   ['Creatives', '/creatives'],
+  ['Landing Generator', '/landing-generator'],
   ['Accounts', '/accounts'],
   ['Agencies', '/agencies'],
   ['Offers', '/offers'],

@@ -53,8 +53,9 @@ type DailySpend = {
 type BudgetPool = {
   id: string;
   name: string;
+  project_name: string | null;
   period: string;
-  total_budget: number;
+  total_budget: number | null;
   warning_threshold_pct: number | null;
 };
 
@@ -112,6 +113,7 @@ export default function DashboardPage() {
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState(today);
   const [rangeLabel, setRangeLabel] = useState('Today');
+  const [selectedBudgetPoolId, setSelectedBudgetPoolId] = useState('');
 
   async function loadDashboardData() {
     setLoading(true);
@@ -158,8 +160,12 @@ export default function DashboardPage() {
     setAgencies((agenciesResult.data || []) as Agency[]);
     setBuyers((buyersResult.data || []) as Buyer[]);
     setOffers((offersResult.data || []) as Offer[]);
-    setBudgetPools((poolsResult.data || []) as BudgetPool[]);
-    setBuyerAllocations((allocationsResult.data || []) as BuyerAllocation[]);
+    const loadedPools = (poolsResult.data || []) as BudgetPool[];
+
+setBudgetPools(loadedPools);
+setBuyerAllocations((allocationsResult.data || []) as BuyerAllocation[]);
+
+setSelectedBudgetPoolId((current) => current || loadedPools[0]?.id || '');
 
     setLoading(false);
   }
@@ -254,29 +260,64 @@ export default function DashboardPage() {
     };
   }, [filteredSpend]);
 
-  const currentBudgetPool = budgetPools[0];
+  const currentBudgetPool = useMemo(() => {
+  if (budgetPools.length === 0) return null;
 
-  const poolBudget =
-    Number(currentBudgetPool?.total_budget || 0) ||
-    buyerAllocations.reduce((sum, allocation) => sum + Number(allocation.allocated_budget || 0), 0) ||
-    25000;
+  return (
+    budgetPools.find((pool) => pool.id === selectedBudgetPoolId) ||
+    budgetPools[0]
+  );
+}, [budgetPools, selectedBudgetPoolId]);
 
-  const warningThreshold = Number(currentBudgetPool?.warning_threshold_pct || 80);
-  const poolSpent = totals.spend;
-  const poolRemaining = poolBudget - poolSpent;
-  const poolUsedPct = poolBudget > 0 ? (poolSpent / poolBudget) * 100 : 0;
+const currentPoolAllocations = useMemo(() => {
+  if (!currentBudgetPool) return [];
 
-  const poolStatus =
-    poolRemaining < 0
-      ? 'Over Budget'
-      : poolUsedPct >= warningThreshold
-        ? 'Near Limit'
-        : 'Healthy';
+  return buyerAllocations.filter(
+    (allocation) => allocation.budget_pool_id === currentBudgetPool.id
+  );
+}, [buyerAllocations, currentBudgetPool]);
+
+const currentPoolBuyerIds = useMemo(() => {
+  return new Set(currentPoolAllocations.map((allocation) => allocation.buyer_id));
+}, [currentPoolAllocations]);
+
+const poolSpendEntries = useMemo(() => {
+  if (!currentBudgetPool) return [];
+
+  return filteredSpend.filter(
+    (entry) => entry.buyer_id && currentPoolBuyerIds.has(entry.buyer_id)
+  );
+}, [filteredSpend, currentBudgetPool, currentPoolBuyerIds]);
+
+const poolBudget = currentBudgetPool
+  ? Number(currentBudgetPool.total_budget ?? 0)
+  : 0;
+
+const warningThreshold = Number(currentBudgetPool?.warning_threshold_pct ?? 80);
+
+const poolSpent = poolSpendEntries.reduce(
+  (sum, entry) => sum + Number(entry.spend || 0),
+  0
+);
+
+const poolRemaining = poolBudget - poolSpent;
+const poolUsedPct = poolBudget > 0 ? (poolSpent / poolBudget) * 100 : 0;
+
+const poolStatus =
+  !currentBudgetPool
+    ? 'No Pool'
+    : poolBudget === 0
+      ? 'No Budget Set'
+      : poolRemaining < 0
+        ? 'Over Budget'
+        : poolUsedPct >= warningThreshold
+          ? 'Near Limit'
+          : 'Healthy';
 
   const buyerUsage = useMemo(() => {
     return buyers.map((buyer) => {
       const buyerEntries = filteredSpend.filter((entry) => entry.buyer_id === buyer.id);
-      const allocation = buyerAllocations.find((item) => item.buyer_id === buyer.id);
+      const allocation = currentPoolAllocations.find((item) => item.buyer_id === buyer.id);
       const allocated = Number(allocation?.allocated_budget || 0);
 
       const spend = buyerEntries.reduce((sum, entry) => sum + Number(entry.spend || 0), 0);
@@ -311,7 +352,7 @@ export default function DashboardPage() {
         status
       };
     });
-  }, [buyers, filteredSpend, buyerAllocations, warningThreshold]);
+  }, [buyers, filteredSpend, currentPoolAllocations, warningThreshold]);
 
   function groupPerformance(
     keyGetter: (entry: DailySpend) => string,
@@ -412,6 +453,24 @@ export default function DashboardPage() {
 
         <div className="filter-bar">
           <label>
+  Project Pool
+  <select
+    value={selectedBudgetPoolId}
+    onChange={(e) => setSelectedBudgetPoolId(e.target.value)}
+  >
+    {budgetPools.length === 0 ? (
+      <option value="">No pools created</option>
+    ) : (
+      budgetPools.map((pool) => (
+        <option key={pool.id} value={pool.id}>
+          {pool.project_name ? `${pool.project_name} — ` : ''}
+          {pool.name}
+        </option>
+      ))
+    )}
+  </select>
+</label>
+          <label>
             Start Date
             <input
               type="date"
@@ -481,7 +540,15 @@ export default function DashboardPage() {
           </section>
 
           <section className="grid grid-4" style={{ marginTop: 18 }}>
-            <MetricCard label="Pool Budget" value={money(poolBudget)} sub={currentBudgetPool?.name || 'Default pool'} />
+            <MetricCard
+  label="Pool Budget"
+  value={money(poolBudget)}
+  sub={
+    currentBudgetPool
+      ? `${currentBudgetPool.project_name ? `${currentBudgetPool.project_name} — ` : ''}${currentBudgetPool.name}`
+      : 'No pool selected'
+  }
+/>
             <MetricCard label="Pool Spent" value={money(poolSpent)} sub={`${pct(poolUsedPct)} used`} />
             <MetricCard label="Remaining Pool" value={money(poolRemaining)} sub={poolRemaining >= 0 ? 'Available budget' : 'Over budget'} />
             <MetricCard label="Budget Status" value={poolStatus} sub={`Warning at ${warningThreshold}%`} />
